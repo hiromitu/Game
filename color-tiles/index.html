@@ -48,6 +48,10 @@
   button.primary { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
   button:disabled { opacity: .5; cursor: default; }
   .spacer { flex: 1; }
+  .volume { font-size: .9rem; display: flex; gap: 4px; align-items: center; }
+  .volume button { padding: 3px 6px; min-width: 2.2em; }
+  .volume input[type=range] { width: 100px; accent-color: var(--accent); }
+  .volume output { min-width: 2.5em; font-variant-numeric: tabular-nums; color: var(--muted); }
   .stat { font-size: .9rem; color: var(--muted); }
   .stat b { color: var(--text); font-size: 1.1rem; font-variant-numeric: tabular-nums; }
   .timebar { flex-basis: 100%; height: 8px; background: var(--board); border-radius: 4px; overflow: hidden; }
@@ -169,6 +173,11 @@
       </select>
     </label>
     <label><input type="checkbox" id="symbols"> 記号を表示</label>
+    <div class="volume" role="group" aria-label="音量">音量
+      <button type="button" id="muteBtn" aria-label="ミュート切り替え">🔊</button>
+      <input type="range" id="volume" min="0" max="100" step="5" value="60" aria-label="音量">
+      <output id="volumeOut">60</output>
+    </div>
     <div class="spacer"></div>
     <button id="hintBtn" disabled>ヒント</button>
     <button id="startBtn" class="primary">スタート</button>
@@ -294,6 +303,113 @@ function findMove() {
   return -1;
 }
 
+// ---- 効果音（Web Audio で合成するので音声ファイル不要） ----
+let audioCtx = null, masterGain = null;
+let volume = 60, muted = false;
+
+function audio() {
+  if (!audioCtx) {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return null;
+    audioCtx = new AC();
+    masterGain = audioCtx.createGain();
+    masterGain.connect(audioCtx.destination);
+    applyVolume();
+  }
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  return audioCtx;
+}
+
+function applyVolume() {
+  // 聴感に合わせて2乗カーブにする
+  if (masterGain) masterGain.gain.value = muted ? 0 : (volume / 100) ** 2;
+  $('muteBtn').textContent = muted || volume === 0 ? '🔇' : volume < 50 ? '🔉' : '🔊';
+  $('volumeOut').textContent = muted ? 'ミュート' : volume;
+}
+
+function tone(ctx, { freq, endFreq = freq, start = 0, dur = 0.2, type = 'sine', peak = 0.3, filter }) {
+  const t0 = ctx.currentTime + start;
+  const osc = ctx.createOscillator();
+  const g = ctx.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, t0);
+  if (endFreq !== freq) osc.frequency.exponentialRampToValueAtTime(endFreq, t0 + dur);
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.exponentialRampToValueAtTime(peak, t0 + 0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  let node = osc;
+  if (filter) {
+    const f = ctx.createBiquadFilter();
+    f.type = 'lowpass';
+    f.frequency.value = filter;
+    osc.connect(f);
+    node = f;
+  }
+  node.connect(g);
+  g.connect(masterGain);
+  osc.start(t0);
+  osc.stop(t0 + dur + 0.02);
+}
+
+// ホワイトノイズ（はじける音の「パチッ」成分に使う）
+let noiseBuf = null;
+function noise(ctx) {
+  if (!noiseBuf) {
+    noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 0.2, ctx.sampleRate);
+    const d = noiseBuf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+  }
+  return noiseBuf;
+}
+
+// 泡がはじけるような短い「ポンッ」: 急降下する音程 + 一瞬のノイズ
+function pop(ctx, start, pitch) {
+  const t0 = ctx.currentTime + start;
+
+  const osc = ctx.createOscillator();
+  const og = ctx.createGain();
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(pitch, t0);
+  osc.frequency.exponentialRampToValueAtTime(pitch * 0.25, t0 + 0.07);
+  og.gain.setValueAtTime(0.0001, t0);
+  og.gain.exponentialRampToValueAtTime(0.5, t0 + 0.003);
+  og.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.09);
+  osc.connect(og).connect(masterGain);
+  osc.start(t0);
+  osc.stop(t0 + 0.1);
+
+  const src = ctx.createBufferSource();
+  src.buffer = noise(ctx);
+  const bp = ctx.createBiquadFilter();
+  bp.type = 'bandpass';
+  bp.frequency.value = pitch * 3;
+  bp.Q.value = 1.2;
+  const ng = ctx.createGain();
+  ng.gain.setValueAtTime(0.0001, t0);
+  ng.gain.exponentialRampToValueAtTime(0.45, t0 + 0.002);
+  ng.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.04);
+  src.connect(bp).connect(ng).connect(masterGain);
+  src.start(t0, Math.random() * 0.1);
+  src.stop(t0 + 0.05);
+}
+
+// 消えたタイル1枚ごとに少しずつずらして、はじける音を重ねる
+function playClear(n) {
+  const ctx = audio();
+  if (!ctx || muted || volume === 0) return;
+  for (let k = 0; k < n; k++) {
+    pop(ctx, k * 0.035 + Math.random() * 0.01, 700 + Math.random() * 350 + k * 60);
+  }
+}
+
+// 失敗: 低く下がるブザー音
+function playMiss() {
+  const ctx = audio();
+  if (!ctx || muted || volume === 0) return;
+  tone(ctx, { freq: 180, endFreq: 90, dur: 0.28, type: 'sawtooth', peak: 0.22, filter: 900 });
+  tone(ctx, { freq: 120, endFreq: 70, start: 0.02, dur: 0.3, type: 'square', peak: 0.1, filter: 500 });
+}
+
 function floatText(i, text, cls) {
   const d = cells[i];
   const el = document.createElement('div');
@@ -329,8 +445,10 @@ function onClick(e) {
     score += hit.length;
     remain -= hit.length;
     floatText(i, '+' + hit.length, 'gain');
+    playClear(hit.length);
   } else {
     misses++;
+    playMiss();
     d.classList.add('miss');
     setTimeout(() => d.classList.remove('miss'), 250);
     boardEl.classList.remove('shake'); void boardEl.offsetWidth; boardEl.classList.add('shake');
@@ -444,6 +562,28 @@ $('startBtn').onclick = startGame;
 for (const id of ['difficulty', 'timeLimit', 'penalty']) {
   $(id).onchange = () => { showBest(); if (!running) { buildBoard(); } };
 }
+{
+  const v = storageGet('colortiles:volume');
+  if (v !== null && !isNaN(+v)) volume = +v;
+  muted = storageGet('colortiles:muted') === '1';
+  $('volume').value = volume;
+  applyVolume();
+}
+$('volume').oninput = () => {
+  volume = +$('volume').value;
+  muted = false;
+  storageSet('colortiles:volume', volume);
+  storageSet('colortiles:muted', '0');
+  applyVolume();
+};
+// 調整し終えたら試し聴き
+$('volume').onchange = () => playClear(2);
+$('muteBtn').onclick = () => {
+  muted = !muted;
+  storageSet('colortiles:muted', muted ? '1' : '0');
+  applyVolume();
+  if (!muted) playClear(2);
+};
 $('symbols').checked = storageGet('colortiles:symbols') === '1';
 $('symbols').onchange = () => {
   storageSet('colortiles:symbols', $('symbols').checked ? '1' : '0');
