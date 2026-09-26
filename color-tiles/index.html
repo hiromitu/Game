@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Color Tiles</title>
+<style>
+  :root {
+    --bg: #f4f1ea;
+    --panel: #ffffff;
+    --text: #2b2b2b;
+    --muted: #777;
+    --board: #e3ddd0;
+    --cell: #f7f4ee;
+    --line: #d6cfbf;
+    --accent: #3a7bd5;
+    --danger: #d64545;
+    --tile-rim: ;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1c1d21; --panel: #26282d; --text: #e8e8e8; --muted: #9a9a9a;
+      --board: #33363c; --cell: #2a2c31; --line: #3f434a;
+    }
+    /* 黒タイルが背景に埋もれないよう縁取りを付ける */
+    :root { --tile-rim: inset 0 0 0 1px rgba(255,255,255,.3), ; }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: system-ui, "Segoe UI", "Hiragino Sans", "Yu Gothic UI", sans-serif;
+    display: flex; flex-direction: column; align-items: center;
+    padding: 16px; min-height: 100vh;
+  }
+  h1 { margin: 0 0 12px; font-size: 1.5rem; letter-spacing: .05em; }
+  .controls, .status {
+    background: var(--panel); border-radius: 10px; padding: 10px 14px;
+    display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center;
+    box-shadow: 0 1px 3px rgba(0,0,0,.12); margin-bottom: 10px;
+    width: 100%; max-width: 900px;
+  }
+  label { font-size: .9rem; display: flex; gap: 6px; align-items: center; }
+  select, button {
+    font: inherit; font-size: .9rem; padding: 5px 10px; border-radius: 6px;
+    border: 1px solid var(--line); background: var(--cell); color: var(--text);
+  }
+  button { cursor: pointer; }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
+  button:disabled { opacity: .5; cursor: default; }
+  .spacer { flex: 1; }
+  .stat { font-size: .9rem; color: var(--muted); }
+  .stat b { color: var(--text); font-size: 1.1rem; font-variant-numeric: tabular-nums; }
+  .timebar { flex-basis: 100%; height: 8px; background: var(--board); border-radius: 4px; overflow: hidden; }
+  .timebar > div { height: 100%; width: 100%; background: var(--accent); transition: background .3s; }
+  .timebar.low > div { background: var(--danger); }
+  .timebar.hidden { display: none; }
+
+  .wrap { position: relative; width: 100%; max-width: 900px; }
+  #board {
+    display: grid; gap: 2px; padding: 6px; background: var(--board);
+    border-radius: 10px; user-select: none; touch-action: manipulation;
+    container-type: inline-size;
+  }
+  .cell {
+    aspect-ratio: 1; background-color: var(--cell); border-radius: 4px; cursor: pointer;
+    position: relative; display: flex; align-items: center; justify-content: center;
+    font-size: calc(100cqw / var(--cols) * 0.55); line-height: 1;
+    /* 空きマスは少しへこんで見せる */
+    box-shadow: inset 0 1px 2px rgba(0,0,0,.12);
+  }
+  /* タイル: 上面の光沢・下辺の影・落ち影で立体に見せる */
+  .cell.t, .cell.vanish {
+    cursor: default;
+    background-image:
+      radial-gradient(ellipse 80% 55% at 35% 20%, rgba(255,255,255,.55), rgba(255,255,255,0) 70%),
+      linear-gradient(to bottom, rgba(255,255,255,.12), rgba(0,0,0,.22));
+    box-shadow:
+      var(--tile-rim)
+      inset 0 2px 1px rgba(255,255,255,.45),
+      inset 0 -3px 2px rgba(0,0,0,.28),
+      0 2px 2px rgba(0,0,0,.35);
+  }
+  .cell.t { text-shadow: 0 1px 0 rgba(255,255,255,.25); }
+  .cell.empty:hover { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .cell.trail { background-color: color-mix(in srgb, var(--accent) 25%, var(--cell)); }
+  .cell.miss { background-color: color-mix(in srgb, var(--danger) 45%, var(--cell)); }
+
+  /* ヒント: クリックすべきマスを黄色く点滅させ、波紋を広げる */
+  .cell.hint {
+    z-index: 3;
+    animation: hint-blink .5s ease-in-out infinite alternate;
+  }
+  @keyframes hint-blink {
+    from { background-color: #ffd54a; box-shadow: 0 0 0 3px #ff6d00, 0 0 12px 4px rgba(255,160,0,.9); }
+    to   { background-color: #fff3b0; box-shadow: 0 0 0 3px #ffb300, 0 0 4px 1px rgba(255,160,0,.5); }
+  }
+  .cell.hint::after {
+    content: ''; position: absolute; inset: 0; border-radius: 50%;
+    border: 3px solid #ff6d00; pointer-events: none;
+    animation: hint-ripple 1s ease-out infinite;
+  }
+  @keyframes hint-ripple {
+    from { transform: scale(1); opacity: 1; }
+    to   { transform: scale(4); opacity: 0; }
+  }
+  /* ヒントで消えるタイルと、そこまでの道筋 */
+  .cell.hint-target { z-index: 2; animation: hint-target .5s ease-in-out infinite alternate; }
+  @keyframes hint-target {
+    from { transform: scale(1); outline: 3px solid #fff; outline-offset: 0; }
+    to   { transform: scale(1.15); outline: 3px solid #ff6d00; outline-offset: 1px; }
+  }
+  .cell.hint-path { background-color: color-mix(in srgb, #ffb300 35%, var(--cell)); }
+
+  .cell.vanish { animation: vanish .35s ease-out forwards; z-index: 1; }
+  @keyframes vanish {
+    0% { transform: scale(1); opacity: 1; }
+    40% { transform: scale(1.25); opacity: .9; }
+    100% { transform: scale(.2); opacity: 0; }
+  }
+  .shake { animation: shake .25s; }
+  @keyframes shake { 25% { transform: translateX(-4px);} 75% { transform: translateX(4px);} }
+
+  .overlay {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    background: rgba(0,0,0,.45); border-radius: 10px;
+  }
+  .overlay.hidden { display: none; }
+  .card {
+    background: var(--panel); padding: 22px 28px; border-radius: 12px; text-align: center;
+    max-width: 90%; box-shadow: 0 6px 24px rgba(0,0,0,.3);
+  }
+  .card h2 { margin: 0 0 8px; }
+  .card p { margin: 6px 0; line-height: 1.6; }
+  .card .big { font-size: 2rem; font-weight: 700; }
+  .rules { text-align: left; font-size: .9rem; }
+  .penalty {
+    position: absolute; pointer-events: none; font-weight: 700; color: var(--danger);
+    font-size: 1rem; animation: floatup .8s ease-out forwards; z-index: 5; white-space: nowrap;
+  }
+  .gain { color: #2e9d52; }
+  @keyframes floatup { from { opacity: 1; transform: translate(-50%, 0); } to { opacity: 0; transform: translate(-50%, -30px); } }
+</style>
+</head>
+<body>
+  <h1>Color Tiles</h1>
+
+  <div class="controls">
+    <label>難易度
+      <select id="difficulty">
+        <option value="easy">かんたん (15×10・6色)</option>
+        <option value="normal" selected>ふつう (23×15・10色)</option>
+        <option value="hard">むずかしい (25×17・12色)</option>
+      </select>
+    </label>
+    <label>制限時間
+      <select id="timeLimit">
+        <option value="0">なし</option>
+        <option value="60">60秒</option>
+        <option value="120" selected>120秒</option>
+        <option value="180">180秒</option>
+        <option value="300">300秒</option>
+      </select>
+    </label>
+    <label>ミス時ペナルティ
+      <select id="penalty">
+        <option value="0">なし</option>
+        <option value="5">-5秒</option>
+        <option value="10" selected>-10秒</option>
+      </select>
+    </label>
+    <label><input type="checkbox" id="symbols"> 記号を表示</label>
+    <div class="spacer"></div>
+    <button id="hintBtn" disabled>ヒント</button>
+    <button id="startBtn" class="primary">スタート</button>
+  </div>
+
+  <div class="status">
+    <span class="stat">スコア <b id="score">0</b></span>
+    <span class="stat">残り <b id="remain">0</b></span>
+    <span class="stat">ミス <b id="misses">0</b></span>
+    <span class="stat" id="timeLabel">時間 <b id="time">--</b></span>
+    <span class="stat">ベスト <b id="best">-</b></span>
+    <div class="timebar" id="timebar"><div></div></div>
+  </div>
+
+  <div class="wrap">
+    <div id="board"></div>
+    <div class="overlay" id="overlay">
+      <div class="card" id="card">
+        <h2>遊び方</h2>
+        <div class="rules">
+          <p>・空いているマスをクリックすると、そこから<b>上下左右</b>に一番近いタイルを調べます。</p>
+          <p>・その中に<b>同じ色が2枚以上</b>あれば、それらが消えて1枚につき1点。</p>
+          <p>・1枚も消えなければミス。制限時間ありの場合は時間が減ります。</p>
+          <p>・全部消せばパーフェクト！ 消せる手がなくなると終了です。</p>
+        </div>
+        <p><button class="primary" onclick="startGame()">スタート</button></p>
+      </div>
+    </div>
+  </div>
+
+<script>
+const DIFF = {
+  easy:   { cols: 15, rows: 10, colors: 6,  per: 12 },
+  normal: { cols: 23, rows: 15, colors: 10, per: 20 },
+  hard:   { cols: 25, rows: 17, colors: 12, per: 24 },
+};
+// 通常の色覚・色覚多様性（P型/D型）の両方で差が大きくなるよう選んだ配色。
+// 同系統の色は2色まで。先頭ほど識別しやすく、かんたんは先頭6色、ふつうは10色を使う。
+const PALETTE = [
+  '#e6194b', '#1f4fe0', '#ffe119', '#00a86b', '#8ecbff', '#ff8c1a',
+  '#ff80c0', '#8a8a8a', '#1a1a1a', '#8b4513', '#b388ff', '#911eb4',
+];
+const SYMBOLS = ['●', '▲', '■', '◆', '★', '✚', '♥', '▼', '♣', '♠', '✖', '◎'];
+const DIRS = [[0, -1], [0, 1], [-1, 0], [1, 0]];
+
+const $ = id => document.getElementById(id);
+const boardEl = $('board');
+
+let cfg, grid, cells, score, remain, misses, hints;
+let running = false, limit = 0, penaltySec = 10, penaltyTotal = 0, startTime = 0, rafId = 0;
+
+function storageGet(k) { try { return localStorage.getItem(k); } catch { return null; } }
+function storageSet(k, v) { try { localStorage.setItem(k, v); } catch {} }
+function modeKey() { return `colortiles:${$('difficulty').value}:${$('timeLimit').value}:${$('penalty').value}`; }
+function showBest() { $('best').textContent = storageGet(modeKey()) ?? '-'; }
+
+function shuffle(a) {
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function buildBoard() {
+  cfg = DIFF[$('difficulty').value];
+  const n = cfg.cols * cfg.rows;
+  const tiles = [];
+  for (let c = 0; c < cfg.colors; c++) for (let k = 0; k < cfg.per; k++) tiles.push(c);
+  while (tiles.length < n) tiles.push(-1);
+  grid = shuffle(tiles);
+
+  boardEl.style.gridTemplateColumns = `repeat(${cfg.cols}, 1fr)`;
+  boardEl.style.setProperty('--cols', cfg.cols);
+  boardEl.innerHTML = '';
+  cells = [];
+  for (let i = 0; i < n; i++) {
+    const d = document.createElement('div');
+    d.className = 'cell';
+    d.dataset.i = i;
+    boardEl.appendChild(d);
+    cells.push(d);
+    paint(i);
+  }
+}
+
+function paint(i) {
+  const d = cells[i], c = grid[i];
+  d.classList.toggle('t', c >= 0);
+  d.classList.toggle('empty', c < 0);
+  d.style.backgroundColor = c >= 0 ? PALETTE[c] : '';
+  d.textContent = c >= 0 && $('symbols').checked ? SYMBOLS[c] : '';
+  d.style.color = c >= 0 ? symbolColor(PALETTE[c]) : '';
+}
+
+// タイルの明るさに応じて記号を白か黒にする
+function symbolColor(hex) {
+  const [r, g, b] = [1, 3, 5].map(i => parseInt(hex.substr(i, 2), 16));
+  return (r * 299 + g * 587 + b * 114) / 1000 > 150 ? 'rgba(0,0,0,.6)' : 'rgba(255,255,255,.85)';
+}
+
+// 上下左右それぞれで最も近いタイルを探す
+function probe(i) {
+  const x = i % cfg.cols, y = Math.floor(i / cfg.cols);
+  const found = [];
+  for (const [dx, dy] of DIRS) {
+    let cx = x + dx, cy = y + dy;
+    const path = [];
+    while (cx >= 0 && cx < cfg.cols && cy >= 0 && cy < cfg.rows) {
+      const j = cy * cfg.cols + cx;
+      if (grid[j] >= 0) { found.push({ j, color: grid[j], path }); break; }
+      path.push(j);
+      cx += dx; cy += dy;
+    }
+  }
+  const count = {};
+  for (const f of found) count[f.color] = (count[f.color] || 0) + 1;
+  return found.filter(f => count[f.color] >= 2);
+}
+
+function findMove() {
+  for (let i = 0; i < grid.length; i++) if (grid[i] < 0 && probe(i).length) return i;
+  return -1;
+}
+
+function floatText(i, text, cls) {
+  const d = cells[i];
+  const el = document.createElement('div');
+  el.className = 'penalty ' + (cls || '');
+  el.textContent = text;
+  el.style.left = (d.offsetLeft + d.offsetWidth / 2) + 'px';
+  el.style.top = (d.offsetTop - 4) + 'px';
+  document.querySelector('.wrap').appendChild(el);
+  setTimeout(() => el.remove(), 800);
+}
+
+function onClick(e) {
+  const d = e.target.closest('.cell');
+  if (!d || !running) return;
+  const i = +d.dataset.i;
+  if (grid[i] >= 0) return;
+  clearHint();
+
+  const hit = probe(i);
+  if (hit.length) {
+    const trail = [i];
+    for (const h of hit) {
+      trail.push(...h.path);
+      const c = cells[h.j];
+      grid[h.j] = -1;
+      c.classList.remove('t');
+      c.classList.add('empty');
+      c.classList.add('vanish');
+      setTimeout(() => { c.classList.remove('vanish'); paint(h.j); }, 350);
+    }
+    for (const t of trail) cells[t].classList.add('trail');
+    setTimeout(() => trail.forEach(t => cells[t].classList.remove('trail')), 250);
+    score += hit.length;
+    remain -= hit.length;
+    floatText(i, '+' + hit.length, 'gain');
+  } else {
+    misses++;
+    d.classList.add('miss');
+    setTimeout(() => d.classList.remove('miss'), 250);
+    boardEl.classList.remove('shake'); void boardEl.offsetWidth; boardEl.classList.add('shake');
+    if (limit && penaltySec) {
+      penaltyTotal += penaltySec;
+      floatText(i, `-${penaltySec}秒`);
+    } else {
+      floatText(i, 'ミス');
+    }
+  }
+  updateStats();
+
+  if (remain === 0) return endGame('perfect');
+  if (findMove() < 0) return endGame('nomove');
+}
+
+function updateStats() {
+  $('score').textContent = score;
+  $('remain').textContent = remain;
+  $('misses').textContent = misses;
+}
+
+function fmt(sec) {
+  sec = Math.max(0, sec);
+  const m = Math.floor(sec / 60), s = Math.floor(sec % 60);
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function tick() {
+  if (!running) return;
+  const elapsed = (performance.now() - startTime) / 1000;
+  if (limit) {
+    const left = limit - elapsed - penaltyTotal;
+    $('time').textContent = fmt(Math.ceil(left));
+    const ratio = Math.max(0, left / limit);
+    $('timebar').firstElementChild.style.width = (ratio * 100) + '%';
+    $('timebar').classList.toggle('low', left <= 15);
+    if (left <= 0) return endGame('timeup');
+  } else {
+    $('time').textContent = fmt(elapsed);
+  }
+  rafId = requestAnimationFrame(tick);
+}
+
+function startGame() {
+  cancelAnimationFrame(rafId);
+  limit = +$('timeLimit').value;
+  penaltySec = +$('penalty').value;
+  buildBoard();
+  score = 0; misses = 0; hints = 0; penaltyTotal = 0;
+  remain = cfg.colors * cfg.per;
+  updateStats();
+  showBest();
+  $('timebar').classList.toggle('hidden', !limit);
+  $('timebar').classList.remove('low');
+  $('timeLabel').firstChild.textContent = limit ? '残り時間 ' : '経過 ';
+  $('overlay').classList.add('hidden');
+  $('hintBtn').disabled = false;
+  $('startBtn').textContent = 'やり直す';
+  running = true;
+  startTime = performance.now();
+  if (findMove() < 0) return endGame('nomove');
+  tick();
+}
+
+function endGame(reason) {
+  running = false;
+  clearHint();
+  cancelAnimationFrame(rafId);
+  $('hintBtn').disabled = true;
+  const elapsed = (performance.now() - startTime) / 1000;
+
+  const key = modeKey();
+  const prev = +(storageGet(key) ?? -1);
+  const isBest = score > prev;
+  if (isBest) storageSet(key, score);
+  showBest();
+
+  const title = { perfect: 'パーフェクト！', timeup: 'タイムアップ', nomove: 'もう消せる手がありません' }[reason];
+  const total = cfg.colors * cfg.per;
+  $('card').innerHTML = `
+    <h2>${title}</h2>
+    <p class="big">${score} / ${total}</p>
+    <p>ミス ${misses} 回 ・ ヒント ${hints} 回 ・ 時間 ${fmt(elapsed)}</p>
+    ${isBest ? '<p>🎉 ベストスコア更新！</p>' : ''}
+    <p><button class="primary" onclick="startGame()">もう一度</button></p>`;
+  $('overlay').classList.remove('hidden');
+}
+
+let hintTimer = 0;
+function clearHint() {
+  clearTimeout(hintTimer);
+  for (const c of boardEl.querySelectorAll('.hint, .hint-target, .hint-path'))
+    c.classList.remove('hint', 'hint-target', 'hint-path');
+}
+$('hintBtn').onclick = () => {
+  if (!running) return;
+  const i = findMove();
+  if (i < 0) return;
+  hints++;
+  clearHint();
+  void boardEl.offsetWidth;
+  cells[i].classList.add('hint');
+  for (const h of probe(i)) {
+    cells[h.j].classList.add('hint-target');
+    h.path.forEach(j => cells[j].classList.add('hint-path'));
+  }
+  hintTimer = setTimeout(clearHint, 4000);
+};
+$('startBtn').onclick = startGame;
+for (const id of ['difficulty', 'timeLimit', 'penalty']) {
+  $(id).onchange = () => { showBest(); if (!running) { buildBoard(); } };
+}
+$('symbols').checked = storageGet('colortiles:symbols') === '1';
+$('symbols').onchange = () => {
+  storageSet('colortiles:symbols', $('symbols').checked ? '1' : '0');
+  cells.forEach((_, i) => paint(i));
+};
+$('penalty').closest('label').title = '制限時間ありのときだけ有効';
+boardEl.addEventListener('click', onClick);
+
+buildBoard();
+showBest();
+</script>
+</body>
+</html>
