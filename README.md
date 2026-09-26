@@ -12,12 +12,9 @@
 
 ## 動かし方
 
-Python 3 が入っていれば動きます。
-
 ```bash
 git clone https://github.com/hiromitu/Game.git
-cd Game/aquarium
-python serve.py
 ```
 
-ブラウザで http://localhost:8765/ を開きます。ES Modules を使っているため、`index.html` をファイルとして直接開いても動きません。詳しくは各フォルダの README を参照してください。
+- `tile-pop/`・`color-tiles/`：`index.html` をブラウザで直接開けば遊べます。
+- `aquarium/`：ローカルサーバーが必要です。手順は [`aquarium/README.md`](aquarium/README.md) を参照してください。

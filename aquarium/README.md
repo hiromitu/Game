@@ -4,7 +4,11 @@ Three.js で描くブラウザ用の 3D アクアリウム。ビルド不要（T
 
 ## 起動
 
+Python 3 が必要。
+
 ```bash
+git clone https://github.com/hiromitu/Game.git
+cd Game/aquarium
 python serve.py
 ```
 
