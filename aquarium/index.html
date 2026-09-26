@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Aquarium</title>
+  <style>
+    :root {
+      --panel-bg: rgba(10, 18, 24, 0.62);
+      --panel-border: rgba(160, 220, 235, 0.18);
+      --text: #e3f1f4;
+      --muted: #9ab7bf;
+      --accent: #5fd0e0;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #0b0f14; color: var(--text);
+      font-family: "Hiragino Sans", "Yu Gothic UI", "Meiryo", system-ui, sans-serif; }
+    canvas#scene { display: block; width: 100vw; height: 100vh; }
+    .vignette { position: fixed; inset: 0; pointer-events: none;
+      background: radial-gradient(ellipse at 50% 45%, transparent 55%, rgba(0, 0, 0, 0.55) 100%); }
+    .loading { position: fixed; inset: 0; display: grid; place-items: center; font-size: 15px; color: var(--muted);
+      background: #0b0f14; transition: opacity 0.6s; }
+    body.ready .loading { opacity: 0; pointer-events: none; }
+
+    .panel { position: fixed; top: 16px; left: 16px; width: 248px; padding: 14px 16px 12px;
+      background: var(--panel-bg); border: 1px solid var(--panel-border); border-radius: 12px;
+      backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); font-size: 13px;
+      transition: transform 0.3s, opacity 0.3s; }
+    body.panel-hidden .panel { transform: translateX(-120%); opacity: 0; }
+    .panel h1 { margin: 0 0 10px; font-size: 15px; font-weight: 600; letter-spacing: 0.04em; }
+    .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 8px 0; }
+    .row label { color: var(--muted); }
+    input[type="range"] { width: 100%; accent-color: var(--accent); }
+    .buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 10px; }
+    button { font: inherit; color: var(--text); background: rgba(255, 255, 255, 0.06);
+      border: 1px solid var(--panel-border); border-radius: 8px; padding: 7px 8px; cursor: pointer; }
+    button:hover { background: rgba(255, 255, 255, 0.12); }
+    button[aria-pressed="true"] { border-color: var(--accent); color: #fff; background: rgba(95, 208, 224, 0.18); }
+    .legend { margin: 12px 0 0; padding: 10px 0 0; border-top: 1px solid var(--panel-border); color: var(--muted);
+      font-size: 12px; line-height: 1.65; list-style: none; }
+    .legend b { color: var(--text); font-weight: 600; }
+    .hint { margin-top: 8px; font-size: 11px; color: var(--muted); }
+    #panel-toggle { position: fixed; top: 16px; right: 16px; width: 40px; height: 40px; padding: 0;
+      border-radius: 50%; background: var(--panel-bg); backdrop-filter: blur(8px); font-size: 18px; }
+
+    @media (max-width: 600px) {
+      .panel { left: 16px; right: 16px; top: auto; bottom: 16px; width: auto; }
+      .legend { display: none; }
+    }
+  </style>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <canvas id="scene"></canvas>
+  <div class="vignette"></div>
+  <div class="loading">水槽を準備しています…</div>
+
+  <aside class="panel">
+    <h1>Aquarium</h1>
+    <div class="row"><label for="pump-level">ポンプの強さ</label><span id="pump-value">100%</span></div>
+    <input id="pump-level" type="range" min="10" max="160" value="100">
+    <div class="buttons">
+      <button id="pump-toggle" aria-pressed="true">ポンプ ON</button>
+      <button id="light-toggle" aria-pressed="false">昼モード</button>
+      <button id="rotate-toggle" aria-pressed="false" style="grid-column: span 2">自動で視点を回す</button>
+    </div>
+    <ul class="legend">
+      <li><b>ネオンテトラ</b> 群れで泳ぎ、エンゼルが来ると散る</li>
+      <li><b>エンゼルフィッシュ</b> ゆったり漂い、時々小魚を追う</li>
+      <li><b>グッピー</b> 水面近くで急発進・求愛・ついばみ</li>
+      <li><b>コリドラス</b> 底砂を探り、時々水面へ息継ぎ</li>
+    </ul>
+    <div class="hint">ドラッグで視点回転 / ホイールでズーム / 右ドラッグで移動</div>
+  </aside>
+  <button id="panel-toggle" aria-label="パネルの表示切替">☰</button>
+
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
