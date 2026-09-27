@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Punch Runner</title>
+  <style>
+    :root {
+      --panel-bg: rgba(16, 20, 30, 0.72);
+      --panel-border: rgba(255, 255, 255, 0.14);
+      --text: #f4f1ea;
+      --muted: #b9bccb;
+      --accent: #ffd166;
+      --red: #e63946;
+      --green: #4dffb8;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #1a2130; color: var(--text);
+      font-family: "Hiragino Sans", "Yu Gothic UI", "Meiryo", system-ui, sans-serif; user-select: none; }
+    canvas#scene { display: block; width: 100vw; height: 100vh; outline: none; }
+    .loading { position: fixed; inset: 0; display: grid; place-items: center; font-size: 15px; color: var(--muted);
+      background: #1a2130; transition: opacity 0.5s; z-index: 50; }
+    body.ready .loading { opacity: 0; pointer-events: none; }
+    button { font: inherit; color: var(--text); background: rgba(255, 255, 255, 0.08); border: 1px solid var(--panel-border);
+      border-radius: 10px; padding: 9px 14px; cursor: pointer; }
+    button:hover:not(:disabled) { background: rgba(255, 255, 255, 0.16); }
+    button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    button.primary { background: var(--red); border-color: transparent; font-weight: 700; color: #fff; }
+    button.primary:hover { background: #f04a57; }
+
+    /* HUD */
+    .hud { position: fixed; top: 14px; left: 14px; padding: 10px 14px; background: var(--panel-bg);
+      border: 1px solid var(--panel-border); border-radius: 12px; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+    .hud[hidden] { display: none; }
+    .hud .stage { display: flex; align-items: baseline; gap: 10px; }
+    .hud .stage span { font-size: 11px; font-weight: 700; letter-spacing: 0.12em; color: var(--accent); }
+    .hud .stage strong { font-size: 16px; }
+    .hud .stats { display: flex; gap: 16px; margin-top: 6px; font-size: 12px; color: var(--muted); }
+    .hud .stats b { color: var(--text); font-size: 15px; font-variant-numeric: tabular-nums; margin-left: 4px; }
+
+    .top-right { position: fixed; top: 14px; right: 14px; display: flex; gap: 8px; }
+    .top-right button { background: var(--panel-bg); backdrop-filter: blur(6px); padding: 8px 12px; font-size: 13px; }
+
+    .hint { position: fixed; left: 50%; top: 16px; transform: translate(-50%, -8px); max-width: min(640px, calc(100vw - 32px));
+      padding: 10px 18px; background: rgba(255, 209, 102, 0.94); color: #2a2110; font-weight: 700; font-size: 14px;
+      border-radius: 999px; text-align: center; opacity: 0; transition: opacity 0.25s, transform 0.25s; pointer-events: none; }
+    .hint.show { opacity: 1; transform: translate(-50%, 0); }
+
+    .toast { position: fixed; left: 50%; top: 32%; transform: translate(-50%, 10px) scale(0.9); font-size: 30px; font-weight: 900;
+      color: var(--green); text-shadow: 0 3px 0 rgba(0, 0, 0, 0.35), 0 0 18px rgba(77, 255, 184, 0.5);
+      opacity: 0; transition: opacity 0.25s, transform 0.25s; pointer-events: none; }
+    .toast.show { opacity: 1; transform: translate(-50%, 0) scale(1); }
+
+    .flash { position: fixed; inset: 0; background: #fff; opacity: 0; pointer-events: none; }
+    .flash.on { animation: flash 0.5s ease-out; }
+    @keyframes flash { from { opacity: 0.7; } to { opacity: 0; } }
+
+    .help { position: fixed; left: 14px; bottom: 14px; width: 272px; padding: 10px 14px 12px; background: var(--panel-bg);
+      border: 1px solid var(--panel-border); border-radius: 12px; font-size: 12px; backdrop-filter: blur(6px); }
+    .help h2 { margin: 0 0 6px; font-size: 12px; letter-spacing: 0.1em; color: var(--accent); display: flex; justify-content: space-between; }
+    .help dl { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; margin: 0; }
+    .help dt { color: var(--text); font-weight: 700; white-space: nowrap; }
+    .help dd { margin: 0; color: var(--muted); }
+    .help.collapsed dl { display: none; }
+    body.menu .help, body.menu .hint, body.menu .toast { display: none; }
+    .help.collapsed { width: auto; padding-bottom: 4px; }
+    kbd { display: inline-block; min-width: 1.6em; padding: 0 4px; border: 1px solid rgba(255, 255, 255, 0.3);
+      border-bottom-width: 2px; border-radius: 4px; font: 11px/1.5 ui-monospace, monospace; text-align: center; }
+
+    /* オーバーレイ画面 */
+    .overlay { position: fixed; inset: 0; display: none; place-items: center; padding: 16px;
+      background: radial-gradient(ellipse at center, rgba(10, 14, 24, 0.35), rgba(10, 14, 24, 0.75)); }
+    .overlay.show { display: grid; }
+    .card { width: min(520px, 100%); padding: 28px 28px 24px; background: rgba(18, 22, 34, 0.9); border: 1px solid var(--panel-border);
+      border-radius: 18px; text-align: center; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45); }
+    .card[hidden] { display: none; }
+    .card h1 { margin: 0; font-size: 44px; font-weight: 900; letter-spacing: 0.02em; line-height: 1.1;
+      color: var(--accent); text-shadow: 0 4px 0 var(--red); }
+    .card h2 { margin: 0 0 16px; font-size: 28px; font-weight: 900; color: var(--accent); }
+    .card .lead { margin: 12px 0 20px; color: var(--muted); font-size: 14px; }
+    .card .actions { display: flex; flex-direction: column; gap: 8px; margin-top: 18px; }
+    .card .small { margin: 10px 0 0; font-size: 12px; color: var(--muted); }
+    .stage-select { display: grid; gap: 8px; text-align: left; }
+    .stage-btn { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 12px; padding: 10px 14px; }
+    .stage-btn .no { font-size: 11px; font-weight: 700; letter-spacing: 0.1em; color: var(--accent); }
+    .stage-btn .nm { font-weight: 700; }
+    .stage-btn .bt { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+    .stage-btn[aria-pressed="true"] { border-color: var(--accent); background: rgba(255, 209, 102, 0.14); }
+    .stage-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+    .result { display: grid; grid-template-columns: 1fr auto; gap: 8px 20px; margin: 0 auto; max-width: 280px; text-align: left; font-size: 15px; }
+    .result dt { color: var(--muted); }
+    .result dd { margin: 0; font-weight: 700; font-variant-numeric: tabular-nums; text-align: right; }
+
+    @media (max-width: 640px) {
+      .help { display: none; }
+      .card h1 { font-size: 34px; }
+      .hint { top: auto; bottom: 16px; }
+    }
+  </style>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js"
+      }
+    }
+  </script>
+</head>
+<body>
+  <canvas id="scene" tabindex="-1"></canvas>
+  <div class="flash" id="flash"></div>
+  <div class="loading">読み込み中…</div>
+
+  <div class="hud" id="hud" hidden>
+    <div class="stage"><span id="hud-stage-no">STAGE 1</span><strong id="hud-stage-name"></strong></div>
+    <div class="stats">
+      <span>タイム<b id="hud-time">0:00.0</b></span>
+      <span>破壊<b id="hud-breaks">0</b></span>
+      <span>落下<b id="hud-falls">0</b></span>
+    </div>
+  </div>
+  <div class="hint" id="hint" role="status"></div>
+  <div class="toast" id="toast"></div>
+
+  <div class="top-right">
+    <button id="btn-help" type="button">操作</button>
+    <button id="btn-mute" type="button" aria-pressed="true">音 ON</button>
+    <button id="btn-pause" type="button">ポーズ</button>
+  </div>
+
+  <aside class="help" id="help">
+    <h2><span>操作</span><span><kbd>H</kbd></span></h2>
+    <dl>
+      <dt><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></dt><dd>移動（矢印キーでも可）</dd>
+      <dt><kbd>Shift</kbd></dt><dd>押しながらで走る</dd>
+      <dt><kbd>Space</kbd></dt><dd>ジャンプ（長押しで高く）</dd>
+      <dt><kbd>J</kbd> / クリック</dt><dd>パンチ。走りながらでダッシュパンチ（2 倍）</dd>
+      <dt>壁へ押し続ける</dt><dd>よじ登る。<kbd>Space</kbd> で壁ジャンプ、後ろで手を離す</dd>
+      <dt><kbd>Q</kbd> <kbd>E</kbd></dt><dd>カメラ回転 / ホイールでズーム</dd>
+      <dt><kbd>R</kbd> <kbd>Esc</kbd> <kbd>M</kbd></dt><dd>やり直し / ポーズ / 音</dd>
+    </dl>
+  </aside>
+
+  <div class="overlay" id="overlay">
+    <section class="card" id="screen-title" hidden>
+      <h1>PUNCH<br>RUNNER</h1>
+      <p class="lead">殴って、よじ登って、跳んで、ゴールのゲートを目指せ！<br>地面以外は、ぜんぶ壊せる。</p>
+      <div class="stage-select" id="stage-select"></div>
+      <div class="actions"><button id="btn-start" class="primary" type="button">スタート</button></div>
+      <p class="small"><kbd>Enter</kbd> でもスタート</p>
+    </section>
+
+    <section class="card" id="screen-pause" hidden>
+      <h2>ポーズ</h2>
+      <div class="actions">
+        <button id="btn-resume" class="primary" type="button">つづける</button>
+        <button id="btn-restart" type="button">ステージをやり直す</button>
+        <button id="btn-title" type="button">タイトルへ</button>
+      </div>
+    </section>
+
+    <section class="card" id="screen-clear" hidden>
+      <h2 id="clear-title">STAGE CLEAR!</h2>
+      <dl class="result">
+        <dt>タイム</dt><dd id="clear-time"></dd>
+        <dt>ベスト</dt><dd id="clear-best"></dd>
+        <dt>壊した数</dt><dd id="clear-breaks"></dd>
+        <dt>落ちた回数</dt><dd id="clear-falls"></dd>
+      </dl>
+      <div class="actions">
+        <button id="btn-next" class="primary" type="button">次のステージへ</button>
+        <button id="btn-retry" type="button">もう一度</button>
+      </div>
+      <p class="small"><kbd>Enter</kbd> で次へ</p>
+    </section>
+
+    <section class="card" id="screen-complete" hidden>
+      <h2>ALL CLEAR!</h2>
+      <p class="lead">全ステージを突破した！</p>
+      <dl class="result">
+        <dt>合計タイム</dt><dd id="complete-time"></dd>
+        <dt>壊した数</dt><dd id="complete-breaks"></dd>
+        <dt>落ちた回数</dt><dd id="complete-falls"></dd>
+      </dl>
+      <div class="actions"><button id="btn-again" class="primary" type="button">タイトルへ</button></div>
+    </section>
+  </div>
+
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
