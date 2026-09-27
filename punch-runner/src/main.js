@@ -1,12 +1,13 @@
 import * as THREE from 'three';
-import { World } from './world.js';
+import { VoxelWorld } from './world.js';
 import { Player } from './player.js';
 import { Effects } from './effects.js';
-import { Goal, Checkpoint } from './markers.js';
-import { STAGES, THEMES, buildStage } from './stages.js';
+import { Goal } from './markers.js';
+import { STAGES, THEMES, generateStage } from './stages.js';
 import { Input } from './input.js';
 import { Sfx } from './audio.js';
 import { Scenery } from './scenery.js';
+import { B } from './blocks.js';
 
 // ---------- レンダラー・シーン ----------
 const canvas = document.getElementById('scene');
@@ -19,38 +20,58 @@ renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
 const scene = new THREE.Scene();
-scene.fog = new THREE.Fog(0xcfe6f2, 45, 150);
-const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 900);
+scene.fog = new THREE.Fog(0xcfe6f2, 70, 220);
+const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.1, 900);
 
 const hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 1.6);
 scene.add(hemi);
 const sun = new THREE.DirectionalLight(0xffffff, 2.6);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
-Object.assign(sun.shadow.camera, { left: -22, right: 22, top: 22, bottom: -22, near: 1, far: 90 });
+Object.assign(sun.shadow.camera, { left: -26, right: 26, top: 26, bottom: -26, near: 1, far: 100 });
 sun.shadow.bias = -0.0005;
 sun.shadow.normalBias = 0.03;
 scene.add(sun, sun.target);
 const SUN_OFFSET = new THREE.Vector3(9, 26, 12);
 
 const scenery = new Scenery(scene);
-const world = new World(scene);
+const world = new VoxelWorld(scene);
 const effects = new Effects(scene, world);
 const sfx = new Sfx();
 const input = new Input(canvas);
 const goal = new Goal(scene);
-let checkpoints = [];
+
+// ステージの立方体の枠と土台
+const cubeFrame = new THREE.Group();
+scene.add(cubeFrame);
+function buildCubeFrame(SX, SY, SZ) {
+  cubeFrame.traverse((o) => { o.geometry?.dispose(); });
+  cubeFrame.clear();
+  const edges = new THREE.LineSegments(
+    new THREE.EdgesGeometry(new THREE.BoxGeometry(SX, SY, SZ)),
+    new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.35 }),
+  );
+  edges.position.set(SX / 2, SY / 2, SZ / 2);
+  const base = new THREE.Mesh(
+    new THREE.BoxGeometry(SX + 0.8, 1.4, SZ + 0.8),
+    new THREE.MeshStandardMaterial({ color: 0x3a3440, roughness: 0.9 }),
+  );
+  base.position.set(SX / 2, -0.7, SZ / 2);
+  base.receiveShadow = true;
+  cubeFrame.add(edges, base);
+}
 
 // ---------- 画面要素 ----------
 const $ = (id) => document.getElementById(id);
 const ui = {
   hud: $('hud'), stageNo: $('hud-stage-no'), stageName: $('hud-stage-name'),
-  time: $('hud-time'), breaks: $('hud-breaks'), falls: $('hud-falls'),
+  time: $('hud-time'), breaks: $('hud-breaks'), height: $('hud-height'),
+  crosshair: $('crosshair'), lockHint: $('lock-hint'), sens: $('sens'), sensValue: $('sens-value'),
   hint: $('hint'), toast: $('toast'), flash: $('flash'), help: $('help'),
   overlay: $('overlay'), stageSelect: $('stage-select'),
-  clearTime: $('clear-time'), clearBreaks: $('clear-breaks'), clearFalls: $('clear-falls'), clearBest: $('clear-best'),
+  clearTime: $('clear-time'), clearBreaks: $('clear-breaks'), clearBest: $('clear-best'),
   clearTitle: $('clear-title'), btnNext: $('btn-next'),
-  completeTime: $('complete-time'), completeBreaks: $('complete-breaks'), completeFalls: $('complete-falls'),
+  completeTime: $('complete-time'), completeBreaks: $('complete-breaks'),
   mute: $('btn-mute'),
 };
 const screens = ['title', 'pause', 'clear', 'complete'];
@@ -63,7 +84,7 @@ function showScreen(name) {
 }
 
 // ---------- 記録（localStorage が使えなくても動く） ----------
-const STORE_KEY = 'punch-runner-progress';
+const STORE_KEY = 'punch-runner-progress-v2';
 function loadProgress() {
   try {
     const v = JSON.parse(localStorage.getItem(STORE_KEY));
@@ -76,6 +97,18 @@ function saveProgress() {
 }
 const progress = loadProgress();
 
+const SETTINGS_KEY = 'punch-runner-settings';
+const settings = (() => {
+  try {
+    const v = JSON.parse(localStorage.getItem(SETTINGS_KEY));
+    if (v && typeof v.sens === 'number') return v;
+  } catch { /* 読めなければ初期値 */ }
+  return { sens: 1 };
+})();
+function saveSettings() {
+  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch { /* 保存できなくても続行 */ }
+}
+
 const fmtTime = (t) => {
   const m = Math.floor(t / 60), s = t - m * 60;
   return `${m}:${s.toFixed(1).padStart(4, '0')}`;
@@ -84,11 +117,18 @@ const fmtTime = (t) => {
 // ---------- ゲーム状態 ----------
 const game = {
   state: 'title', stage: 0, selected: 0,
-  time: 0, falls: 0, hitstop: 0, winTimer: 0,
-  checkpoint: null, hint: '', toastTimer: 0,
+  time: 0, hitstop: 0, winTimer: 0,
+  hint: '', tip: 0, tipTimer: 0, toastTimer: 0,
   run: [], // 今回の挑戦で各ステージをクリアしたときの記録
 };
-const cam = { yaw: 0, yawTarget: 0, pitch: 0.86, dist: 14, distTarget: 14, target: new THREE.Vector3(), shake: 0 };
+// プレイ中：キャラの後ろから、マウスで決めた向き（yaw / pitch）を見るカメラ
+// タイトル：立方体のまわりをゆっくり回る
+const cam = {
+  yaw: Math.PI, pitch: -0.25, dist: 5, distTarget: 5, curDist: 5,
+  orbit: 0, target: new THREE.Vector3(), shake: 0,
+};
+const PITCH_MIN = -1.45, PITCH_MAX = 1.25;
+const REACH = 3.2; // パンチが届く距離（頭から）
 
 const player = new Player(scene, world, {
   onJump: () => sfx.jump(),
@@ -100,22 +140,34 @@ const player = new Player(scene, world, {
   onGrab: () => sfx.grab(),
   onMantle: () => sfx.grab(),
   onSwing: (dash) => sfx.swing(dash),
+  onSplash: (speed) => {
+    sfx.splash(Math.min(1, speed / 12));
+    effects.splash(player.pos.clone().setY(player.pos.y + 0.8), Math.min(1, speed / 12));
+  },
+  onPound: (results, point) => {
+    sfx.pound();
+    if (results[0]) sfx.hit(results[0].def.sound);
+    effects.dust(point, 1);
+    game.hitstop = Math.max(game.hitstop, 0.08);
+    cam.shake = Math.max(cam.shake, 0.45);
+  },
   onPunchHit: (results, point, dash) => {
-    sfx.hit(results[0].obj.type.sound);
+    sfx.hit(results[0].def.sound);
     effects.spark(point, dash);
     game.hitstop = Math.max(game.hitstop, dash ? 0.08 : 0.055);
     cam.shake = Math.max(cam.shake, dash ? 0.3 : 0.16);
   },
 });
 
-world.onBreak = (obj, dir) => {
-  effects.burst(obj, dir);
-  sfx.break(obj.type.sound);
-  cam.shake = Math.max(cam.shake, 0.3 + Math.min(0.3, obj.size[0] * obj.size[1] * obj.size[2] * 0.05));
+world.onBreak = ({ x, y, z, def, dir }) => {
+  effects.burstBlock(x, y, z, def, dir);
+  sfx.break(def.sound);
+  cam.shake = Math.max(cam.shake, 0.3);
 };
-world.onLand = (obj, impact) => {
+// 砂や木箱が落ちて着地した
+world.onLand = ({ x, y, z, impact }) => {
   const s = Math.min(1, impact / 14);
-  const c = new THREE.Vector3((obj.min.x + obj.max.x) / 2, obj.min.y + 0.05, (obj.min.z + obj.max.z) / 2);
+  const c = new THREE.Vector3(x + 0.5, y + 0.05, z + 0.5);
   const near = c.distanceTo(player.pos) < 14;
   if (near) sfx.thud(s);
   effects.dust(c, s);
@@ -132,30 +184,32 @@ function applyTheme(theme) {
 }
 
 function spawnPoint() {
-  const [x, z] = game.checkpoint ? [game.checkpoint.x, game.checkpoint.z] : STAGES[game.stage].start;
-  const top = world.supportTop(x - 0.3, z - 0.3, x + 0.3, z + 0.3, Infinity);
-  return new THREE.Vector3(x, (top === -Infinity ? 0 : top) + 0.01, z);
+  const [x, z] = STAGES[game.stage].start;
+  return new THREE.Vector3(x + 0.5, world.surfaceTop(x, z) + 0.01, z + 0.5);
 }
 
 function loadStage(i) {
   game.stage = i;
   const st = STAGES[i];
   const theme = THEMES[st.theme];
-  world.clear();
   effects.clear();
-  for (const c of checkpoints) c.dispose();
   applyTheme(theme);
-  buildStage(st, world, theme);
-  world.settle();
-  goal.place(world, st.goal[0], st.goal[1]);
-  checkpoints = st.checkpoints.map(([x, z]) => new Checkpoint(scene, world, x, z));
-  game.checkpoint = null;
+  generateStage(st, world);
+  buildCubeFrame(world.SX, world.SY, world.SZ);
+  // goal は [x, z]（地表に置く）か [x, y, z]（地中など高さを指定）
+  const [gx, a, b] = st.goal;
+  if (b === undefined) goal.place(world, gx + 0.5, a + 0.5);
+  else goal.place(world, gx + 0.5, b + 0.5, a);
   game.time = 0;
-  game.falls = 0;
   game.hitstop = 0;
   game.hint = '';
+  game.tip = 0;
+  game.tipTimer = 0;
   player.reset(spawnPoint());
-  cam.yaw = cam.yawTarget = 0;
+  cam.yaw = Math.atan2(goal.x - player.pos.x, goal.z - player.pos.z);
+  cam.pitch = -0.25;
+  cam.curDist = cam.distTarget;
+  player.facing = cam.yaw;
   cam.target.copy(player.pos).add(new THREE.Vector3(0, 1, 0));
   ui.stageNo.textContent = `STAGE ${i + 1}`;
   ui.stageName.textContent = st.name;
@@ -170,9 +224,11 @@ function startStage(i) {
   game.state = 'play';
   ui.hud.hidden = false;
   showScreen(null);
+  input.lock();
 }
 
 function toTitle() {
+  input.unlock();
   game.state = 'title';
   ui.hud.hidden = true;
   ui.hint.classList.remove('show');
@@ -184,28 +240,37 @@ function toTitle() {
 function pause() {
   if (game.state !== 'play') return;
   game.state = 'paused';
+  input.unlock();
   showScreen('pause');
 }
 function resume() {
   if (game.state !== 'paused') return;
   game.state = 'play';
   showScreen(null);
+  input.lock();
 }
 
+// Esc などでマウスのロックが外れたらポーズする
+input.onLockChange = (locked) => {
+  if (!locked && game.state === 'play') pause();
+  updateLockUi();
+};
+function updateLockUi() {
+  const playing = game.state === 'play' || game.state === 'win';
+  ui.crosshair.hidden = !(playing && input.locked);
+  ui.lockHint.hidden = !(game.state === 'play' && !input.locked);
+}
+// ロックが取れなかったときは、画面をクリックして取り直す
+canvas.addEventListener('mousedown', () => { if (game.state === 'play' && !input.locked) input.lock(); });
+
+// 念のため：立方体の外へ出てしまったらスタートに戻す
 function respawn() {
-  game.falls++;
   sfx.fall();
   ui.flash.classList.remove('on');
   void ui.flash.offsetWidth;
   ui.flash.classList.add('on');
   player.reset(spawnPoint());
   cam.target.copy(player.pos).add(new THREE.Vector3(0, 1, 0));
-}
-
-function showToast(text) {
-  ui.toast.textContent = text;
-  ui.toast.classList.add('show');
-  game.toastTimer = 1.6;
 }
 
 function win() {
@@ -217,9 +282,10 @@ function win() {
 }
 
 function showClear() {
+  input.unlock();
   const i = game.stage;
   const breaks = world.brokenCount;
-  game.run[i] = { time: game.time, breaks, falls: game.falls };
+  game.run[i] = { time: game.time, breaks };
   const prevBest = progress.best[i];
   const isBest = prevBest == null || game.time < prevBest;
   if (isBest) progress.best[i] = game.time;
@@ -232,7 +298,6 @@ function showClear() {
     const sum = (k) => game.run.reduce((a, r) => a + (r ? r[k] : 0), 0);
     ui.completeTime.textContent = fmtTime(sum('time'));
     ui.completeBreaks.textContent = sum('breaks');
-    ui.completeFalls.textContent = sum('falls');
     showScreen('complete');
     return;
   }
@@ -240,7 +305,6 @@ function showClear() {
   ui.clearTitle.textContent = `STAGE ${i + 1} CLEAR!`;
   ui.clearTime.textContent = fmtTime(game.time);
   ui.clearBreaks.textContent = breaks;
-  ui.clearFalls.textContent = game.falls;
   ui.clearBest.textContent = isBest ? '新記録！' : fmtTime(prevBest);
   showScreen('clear');
 }
@@ -268,17 +332,24 @@ function renderStageSelect() {
 
 let hudCache = {};
 function updateHud(force = false) {
-  const vals = { time: fmtTime(game.time), breaks: String(world.brokenCount), falls: String(game.falls) };
+  const vals = { time: fmtTime(game.time), breaks: String(world.brokenCount), height: `${Math.max(0, Math.floor(player.pos.y))}m` };
   for (const k in vals) {
     if (force || hudCache[k] !== vals[k]) ui[k].textContent = vals[k];
   }
   hudCache = vals;
 }
 
-function updateHint() {
-  const z = player.pos.z;
-  const h = STAGES[game.stage].hints.find((x) => z <= x.z[0] && z > x.z[1]);
-  const text = h ? h.text : '';
+// ステージのヒントを順番に表示する（2 周したら消す）。水中では泳ぎ方を出す
+const TIP_TIME = 7;
+function updateHint(dt) {
+  const tips = STAGES[game.stage].tips;
+  game.tipTimer += dt;
+  if (game.tipTimer > TIP_TIME) {
+    game.tipTimer = 0;
+    game.tip++;
+  }
+  let text = game.tip < tips.length * 2 ? tips[game.tip % tips.length] : '';
+  if (player.inWater) text = '右クリック長押しで浮上。岸に向かって進むと登れる';
   if (text !== game.hint) {
     game.hint = text;
     if (text) ui.hint.textContent = text;
@@ -287,63 +358,123 @@ function updateHint() {
 }
 
 // ---------- カメラ ----------
+const _dir = new THREE.Vector3();
+const _pivot = new THREE.Vector3();
+const _right = new THREE.Vector3();
+
+// マウスの移動量でキャラの向き（左右・上下）を変える
+function updateLook() {
+  if (!input.locked) return;
+  const k = 0.0024 * settings.sens;
+  cam.yaw -= input.lookX * k;
+  cam.pitch = Math.max(PITCH_MIN, Math.min(PITCH_MAX, cam.pitch - input.lookY * k));
+}
+
+function lookDir(out) {
+  const cp = Math.cos(cam.pitch);
+  return out.set(Math.sin(cam.yaw) * cp, Math.sin(cam.pitch), Math.cos(cam.yaw) * cp);
+}
+
+// その点がブロックの中か（カメラのめり込み判定。立方体の外は空いているものとする）
+function blockedAt(x, y, z) {
+  if (y < 0) return true;
+  const t = world.get(Math.floor(x), Math.floor(y), Math.floor(z));
+  return t > 0 && t !== B.WATER;
+}
+
 function updateCamera(dt) {
-  cam.yaw += (cam.yawTarget - cam.yaw) * Math.min(1, dt * 8);
+  if (game.state === 'title') {
+    // 立方体全体を見せる
+    cam.orbit += dt * 0.12;
+    const dist = Math.max(world.SX, world.SZ) * 1.05;
+    const c = new THREE.Vector3(world.SX / 2, world.SY * 0.2, world.SZ / 2);
+    camera.position.set(c.x + Math.sin(cam.orbit) * Math.cos(0.62) * dist, c.y + Math.sin(0.62) * dist, c.z + Math.cos(cam.orbit) * Math.cos(0.62) * dist);
+    camera.lookAt(c);
+    player.model.root.visible = true;
+    sun.position.copy(c).add(SUN_OFFSET);
+    sun.target.position.copy(c);
+    return;
+  }
+
+  // 肩越し（右肩）の少し後ろ。真上・真下を向くときは肩のずれをなくす
+  lookDir(_dir);
+  _right.set(-Math.cos(cam.yaw), 0, Math.sin(cam.yaw));
+  const shoulder = 0.8 * Math.max(0, 1 - Math.abs(cam.pitch) / 1.2);
+  const ky = 1 - Math.exp(-dt * 14);
+  cam.target.x = player.pos.x;
+  cam.target.z = player.pos.z;
+  cam.target.y += (player.pos.y + 1.75 - cam.target.y) * ky; // 段差を登るときにカメラが跳ねないよう高さだけなめらかに
+  _pivot.copy(cam.target).addScaledVector(_right, shoulder);
+
+  // 後ろにブロックがあればカメラを手前に寄せる
   cam.dist += (cam.distTarget - cam.dist) * Math.min(1, dt * 8);
-  if (game.state === 'title') cam.yawTarget += dt * 0.12;
+  let free = cam.dist;
+  for (let t = 0.3; t <= cam.dist; t += 0.1) {
+    if (blockedAt(_pivot.x - _dir.x * t, _pivot.y - _dir.y * t, _pivot.z - _dir.z * t)) { free = Math.max(0.35, t - 0.3); break; }
+  }
+  cam.curDist = free < cam.curDist ? free : cam.curDist + (free - cam.curDist) * Math.min(1, dt * 5);
+  camera.position.copy(_pivot).addScaledVector(_dir, -cam.curDist);
+  camera.lookAt(_pivot.x + _dir.x * 10, _pivot.y + _dir.y * 10, _pivot.z + _dir.z * 10);
+  player.model.root.visible = cam.curDist > 1.1; // 近すぎるとキャラで画面がふさがるので隠す
 
-  const desired = new THREE.Vector3(player.pos.x, player.pos.y + 1, player.pos.z);
-  const kxz = 1 - Math.exp(-dt * 8), ky = 1 - Math.exp(-dt * 4);
-  cam.target.x += (desired.x - cam.target.x) * kxz;
-  cam.target.z += (desired.z - cam.target.z) * kxz;
-  cam.target.y += (desired.y - cam.target.y) * ky;
-
-  const cp = Math.cos(cam.pitch) * cam.dist;
-  camera.position.set(
-    cam.target.x + Math.sin(cam.yaw) * cp,
-    cam.target.y + Math.sin(cam.pitch) * cam.dist,
-    cam.target.z + Math.cos(cam.yaw) * cp,
-  );
-  camera.lookAt(cam.target);
   if (cam.shake > 0.001) {
-    const s = cam.shake * 0.35;
-    camera.position.x += (Math.random() - 0.5) * s;
-    camera.position.y += (Math.random() - 0.5) * s;
-    camera.position.z += (Math.random() - 0.5) * s;
+    const sh = cam.shake * 0.12;
+    camera.position.x += (Math.random() - 0.5) * sh;
+    camera.position.y += (Math.random() - 0.5) * sh;
+    camera.position.z += (Math.random() - 0.5) * sh;
     cam.shake *= Math.exp(-dt * 10);
   }
 
-  sun.position.copy(cam.target).add(SUN_OFFSET);
-  sun.target.position.copy(cam.target);
+  sun.position.copy(player.pos).add(SUN_OFFSET);
+  sun.target.position.copy(player.pos);
 }
 
-// カメラとキャラの間にあるオブジェクトを半透明にする
-const _dir = new THREE.Vector3();
-function rayHitsBox(o, d, maxT, b) {
-  let t0 = 0, t1 = maxT;
-  for (const a of ['x', 'y', 'z']) {
-    if (Math.abs(d[a]) < 1e-9) {
-      if (o[a] < b.min[a] || o[a] > b.max[a]) return false;
-      continue;
-    }
-    let ta = (b.min[a] - o[a]) / d[a], tb = (b.max[a] - o[a]) / d[a];
-    if (ta > tb) [ta, tb] = [tb, ta];
-    t0 = Math.max(t0, ta);
-    t1 = Math.min(t1, tb);
-    if (t1 < t0) return false;
+// 画面中央（照準）の先にあるブロックを探す。頭から REACH 以内のものだけ
+const highlight = new THREE.LineSegments(
+  new THREE.EdgesGeometry(new THREE.BoxGeometry(1.01, 1.01, 1.01)),
+  new THREE.LineBasicMaterial({ color: 0x111111, transparent: true, opacity: 0.6 }),
+);
+highlight.visible = false;
+scene.add(highlight);
+
+function updateAim() {
+  const aim = player.aim;
+  aim.yaw = cam.yaw;
+  aim.pitch = cam.pitch;
+  const d = lookDir(aim.dir);
+  const head = new THREE.Vector3(player.pos.x, player.pos.y + 1.5, player.pos.z);
+  const rel = head.clone().sub(camera.position);
+  const t0 = Math.max(0, rel.dot(d) - 0.6);
+  const origin = camera.position.clone().addScaledVector(d, t0);
+  const hit = world.raycast(origin, d, REACH + 0.6);
+  let ok = false;
+  if (hit) {
+    const center = new THREE.Vector3(hit.x + 0.5, hit.y + 0.5, hit.z + 0.5);
+    ok = center.distanceTo(head) <= REACH + 0.5;
   }
-  return true;
+  aim.target = ok ? hit : null;
+
+  // 真下／真上を向いたときは、足元・頭上のブロックを狙う（掘り下げ・掘り上げがしやすいように）
+  if (cam.pitch < -1.1 && (player.grounded || player.state === 'ground')) {
+    const c = player.cellUnderFeet();
+    if (c) { aim.target = { x: c[0], y: c[1], z: c[2], normal: [0, 1, 0] }; ok = true; }
+  } else if (cam.pitch > 1.0) {
+    const x = Math.floor(player.pos.x), y = Math.floor(player.pos.y + 2.1), z = Math.floor(player.pos.z);
+    const t = world.get(x, y, z);
+    if (t > 0 && t !== B.WATER) { aim.target = { x, y, z, normal: [0, -1, 0] }; ok = true; }
+  }
+  const cell = aim.target;
+  highlight.visible = ok && game.state === 'play';
+  if (ok) highlight.position.set(cell.x + 0.5, cell.y + 0.5, cell.z + 0.5);
 }
-function updateOcclusion() {
-  for (const o of world.objects) o.fadeTarget = 1;
-  if (game.state === 'title') return;
-  const from = camera.position;
-  for (const h of [0.5, 1.6]) {
-    _dir.set(player.pos.x - from.x, player.pos.y + h - from.y, player.pos.z - from.z);
-    const len = _dir.length();
-    _dir.divideScalar(len);
-    for (const o of world.objects) if (rayHitsBox(from, _dir, len - 0.5, o)) o.fadeTarget = 0.25;
-  }
+
+// カメラとキャラを結ぶ線のまわりの地形を描かないようにする（山の陰や穴の中でもキャラが見える）
+function updateCutaway() {
+  const u = world.cutUniforms;
+  const on = game.state === 'play' || game.state === 'win' || game.state === 'paused';
+  u.uCutR.value = on ? 1.2 : 0;
+  u.uCutPlayer.value.set(player.pos.x, player.pos.y + 0.9, player.pos.z);
+  u.uCutCam.value.copy(camera.position);
 }
 
 // ---------- メインループ ----------
@@ -353,7 +484,7 @@ let elapsed = 0;
 function handleKeys() {
   if (input.hit('mute')) toggleMute();
   if (input.hit('help')) ui.help.classList.toggle('collapsed');
-  if (input.wheel) cam.distTarget = Math.min(24, Math.max(8, cam.distTarget + input.wheel * 0.01));
+  if (input.wheel) cam.distTarget = Math.min(9, Math.max(2.5, cam.distTarget + input.wheel * 0.004));
   switch (game.state) {
     case 'title':
       if (input.hit('confirm')) startStage(game.selected);
@@ -361,8 +492,6 @@ function handleKeys() {
     case 'play':
       if (input.hit('pause')) pause();
       else if (input.hit('restart')) loadStage(game.stage);
-      if (input.hit('camLeft')) cam.yawTarget -= Math.PI / 4;
-      if (input.hit('camRight')) cam.yawTarget += Math.PI / 4;
       break;
     case 'paused':
       if (input.hit('pause') || input.hit('confirm')) resume();
@@ -385,6 +514,7 @@ function tick(rawDt) {
   elapsed += rawDt;
   handleKeys();
 
+  if (game.state === 'play') updateLook();
   if (game.state === 'play' || game.state === 'win') {
     let dt = rawDt;
     if (game.hitstop > 0) { // ヒットストップ：当たった瞬間だけ時間をほぼ止める
@@ -395,25 +525,16 @@ function tick(rawDt) {
       x: input.x, y: input.y, run: input.held('run'),
       jumpPressed: input.hit('jump'), jumpHeld: input.held('jump'),
       punchPressed: input.hit('punch'),
-    }, cam.yaw);
+    });
     world.update(dt);
     effects.update(dt);
     goal.update(dt, world, elapsed);
-    for (const c of checkpoints) c.update(dt, world, elapsed);
 
     if (game.state === 'play') {
       game.time += rawDt;
-      if (player.pos.y < -14) respawn();
-      for (const c of checkpoints) {
-        if (!c.active && c.contains(player.pos)) {
-          c.activate();
-          game.checkpoint = c;
-          sfx.checkpoint();
-          showToast('チェックポイント！');
-        }
-      }
+      if (player.pos.y < -2) respawn();
       if (goal.contains(player.pos)) win();
-      updateHint();
+      updateHint(rawDt);
       updateHud();
     } else {
       game.winTimer -= rawDt;
@@ -423,7 +544,6 @@ function tick(rawDt) {
     // タイトル・ポーズ中も見た目だけは動かす
     player.animate(game.state === 'paused' ? 0 : rawDt);
     goal.update(0, world, elapsed);
-    for (const c of checkpoints) c.update(0, world, elapsed);
   }
 
   if (game.toastTimer > 0) {
@@ -432,7 +552,9 @@ function tick(rawDt) {
   }
 
   updateCamera(rawDt);
-  updateOcclusion();
+  updateAim();
+  updateCutaway();
+  updateLockUi();
   scenery.update(rawDt, camera);
   renderer.render(scene, camera);
   input.endFrame();
@@ -461,7 +583,17 @@ function startStageKeepRun(i) {
   game.state = 'play';
   ui.hud.hidden = false;
   showScreen(null);
+  input.lock();
 }
+
+// マウス感度（ポーズ画面）
+ui.sens.value = String(settings.sens);
+ui.sensValue.textContent = `${settings.sens.toFixed(1)}x`;
+ui.sens.addEventListener('input', () => {
+  settings.sens = Number(ui.sens.value);
+  ui.sensValue.textContent = `${settings.sens.toFixed(1)}x`;
+  saveSettings();
+});
 
 window.addEventListener('blur', pause);
 document.addEventListener('visibilitychange', () => { if (document.hidden) pause(); });
@@ -472,7 +604,7 @@ window.addEventListener('resize', () => {
 });
 
 // デバッグ用（ブラウザのコンソールから状態を確認できる）
-window.__punchRunner = { game, player, world, cam, input, tick };
+window.__punchRunner = { game, player, world, cam, input, tick, camera };
 
 toTitle();
 document.body.classList.add('ready');

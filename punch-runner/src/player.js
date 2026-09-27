@@ -1,12 +1,12 @@
 import * as THREE from 'three';
 import { GRAVITY } from './world.js';
 
-// 自キャラ：歩く・走る・ジャンプ・パンチ・よじ登り。
-// 当たり判定は足元中心の AABB（幅 HW*2、高さ HEIGHT）。
+// 自キャラ：歩く・走る・ジャンプ・泳ぐ・よじ登り・パンチ。
+// 体の向きはマウスで決めた向き（aim）に合わせ、パンチは照準の先のブロックに当たる。
+// 当たり判定は足元中心の AABB（幅 HW*2、高さ HEIGHT）で、ブロックのグリッドと衝突する。
 
 const HW = 0.32;
 const HEIGHT = 1.8;
-const STEP = 0.45;          // 自動で乗り越える段差
 const WALK = 4.5;
 const RUN = 8.0;
 const JUMP_V = 8.4;          // 最高到達 約 1.36m
@@ -18,6 +18,9 @@ const CORNER_SLIDE = 0.12;  // この幅以下の引っかかりは横へ逃が�
 const PUNCH_TIME = 0.3;
 const PUNCH_HIT_AT = 0.085;
 const PUNCH_CHAIN_AT = 0.2;  // この時点以降なら次のパンチを出せる
+const SWIM = 3.0;
+const POUND_V = -20;         // 急降下パンチの落下速度
+const POUND_PITCH = -0.9;    // 空中でこれより下を向いてパンチすると急降下パンチ
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
@@ -48,6 +51,7 @@ function buildModel() {
   torso.add(head);
   head.add(box(0.5, 0.48, 0.48, skin, 0, 0.24, 0));
   head.add(box(0.52, 0.12, 0.5, hair, 0, 0.44, -0.01));
+  head.add(box(0.52, 0.34, 0.08, hair, 0, 0.27, -0.23));
   head.add(box(0.53, 0.08, 0.51, band, 0, 0.35, 0));
   for (const s of [-1, 1]) {
     head.add(box(0.07, 0.11, 0.02, eye, s * 0.11, 0.22, 0.245));
@@ -90,6 +94,8 @@ export class Player {
     this.contacts = [];
     this.moveDir = { x: 0, z: 0, len: 0 };
     this.pose = { aLx: 0, aLz: 0, aRx: 0, aRz: 0, lLx: 0, lRx: 0, lean: 0, bob: 0, twist: 0, headX: 0 };
+    // マウスで決めた向きと、照準の先のブロック（main が毎フレーム入れる）
+    this.aim = { yaw: Math.PI, pitch: 0, dir: new THREE.Vector3(0, 0, -1), target: null };
     this.reset(new THREE.Vector3());
   }
 
@@ -98,17 +104,19 @@ export class Player {
     this.vel.set(0, 0, 0);
     this.state = 'air';
     this.grounded = false;
+    this.inWater = false;
     this.coyote = 0;
     this.jumpBuffer = 0;
     this.jumpCut = false;
     this.punchBuffer = 0;
     this.punchT = -1;
+    this.punchPitch = 0;
     this.punchArm = 0;
     this.punchDash = false;
     this.pushTimer = 0;
     this.regrab = 0;
     this.running = false;
-    this.facing = Math.PI; // -Z 向き（奥へ進む）
+    this.facing = Math.PI; // -Z 向き
     this.phase = 0;
     this.climbPhase = 0;
     this.t = 0;
@@ -121,65 +129,89 @@ export class Player {
     return { x: Math.sin(this.facing), z: Math.cos(this.facing) };
   }
 
-  update(dt, input, camYaw) {
+  update(dt, input) {
     this.jumpBuffer = input.jumpPressed ? 0.13 : Math.max(0, this.jumpBuffer - dt);
     this.punchBuffer = input.punchPressed ? 0.18 : Math.max(0, this.punchBuffer - dt);
     this.regrab = Math.max(0, this.regrab - dt);
 
-    // 入力をカメラの向き基準のワールド方向へ
-    const fx = -Math.sin(camYaw), fz = -Math.cos(camYaw);
-    const rx = Math.cos(camYaw), rz = -Math.sin(camYaw);
+    // WASD を、向いている方向（左右の向き）基準のワールド方向へ
+    const yaw = this.aim.yaw;
+    const fx = Math.sin(yaw), fz = Math.cos(yaw);
+    const rx = -Math.cos(yaw), rz = Math.sin(yaw);
     let mx = rx * input.x + fx * input.y;
     let mz = rz * input.x + fz * input.y;
     let ml = Math.hypot(mx, mz);
     if (ml > 1) { mx /= ml; mz /= ml; ml = 1; }
     this.moveDir.x = mx; this.moveDir.z = mz; this.moveDir.len = ml;
 
-    if (this.state === 'win') this.updateWin(dt, camYaw);
+    if (this.state === 'win') this.updateWin(dt);
     else if (this.state === 'mantle') this.updateMantle(dt);
     else if (this.state === 'climb') this.updateClimb(dt);
+    else if (this.state === 'pound') this.updatePound(dt);
     else this.updateMove(dt, input);
 
     this.updatePunch(dt);
     this.animate(dt);
   }
 
-  // ---------- 地上・空中 ----------
+  // ---------- 地上・空中・水中 ----------
   updateMove(dt, input) {
     const md = this.moveDir;
     const wasGrounded = this.grounded;
+    const wasInWater = this.inWater;
+    this.inWater = this.world.isWaterAt(this.pos.x, this.pos.y + 0.8, this.pos.z);
+    const headOut = !this.world.isWaterAt(this.pos.x, this.pos.y + 1.55, this.pos.z);
+    if (this.inWater && !wasInWater && this.vel.y < -3) this.hooks.onSplash?.(-this.vel.y);
+
     this.running = input.run && md.len > 0.1;
-    let speed = this.running ? RUN : WALK;
+    let speed = this.inWater ? SWIM * (this.running ? 1.35 : 1) : this.running ? RUN : WALK;
     if (this.punchT >= 0 && this.grounded && !this.punchDash) speed *= 0.3;
-    const acc = (this.grounded ? 60 : 16) * dt;
+    const acc = (this.grounded ? 60 : this.inWater ? 14 : 16) * dt;
     this.vel.x += clamp(md.x * speed - this.vel.x, -acc, acc);
     this.vel.z += clamp(md.z * speed - this.vel.z, -acc, acc);
 
     this.coyote = this.grounded ? 0.1 : Math.max(0, this.coyote - dt);
-    if (this.jumpBuffer > 0 && this.coyote > 0) {
-      this.vel.y = JUMP_V;
-      this.jumpBuffer = 0;
-      this.coyote = 0;
-      this.grounded = false;
-      this.jumpCut = true;
-      this.hooks.onJump?.();
+    if (this.inWater) {
+      // 泳ぐ：ゆっくり沈み、Space 長押しで浮き上がる。水面から顔が出ていれば跳び出せる
+      this.vel.y += (input.jumpHeld ? 16 : -5) * dt;
+      this.vel.y *= Math.max(0, 1 - dt * 2);
+      this.vel.y = clamp(this.vel.y, -3.5, 3.2);
+      if (this.jumpBuffer > 0 && headOut) {
+        this.vel.y = 7.2;
+        this.jumpBuffer = 0;
+        this.hooks.onJump?.();
+      }
+      this.jumpCut = false;
+    } else {
+      if (this.jumpBuffer > 0 && this.coyote > 0) {
+        this.vel.y = JUMP_V;
+        this.jumpBuffer = 0;
+        this.coyote = 0;
+        this.grounded = false;
+        this.jumpCut = true;
+        this.hooks.onJump?.();
+      }
+      // ボタンを早く離すと低いジャンプ
+      if (this.jumpCut && !input.jumpHeld && this.vel.y > 2) { this.vel.y *= 0.5; this.jumpCut = false; }
+      if (this.vel.y <= 0) this.jumpCut = false;
+      this.vel.y = Math.max(this.vel.y - GRAVITY * dt, -32);
     }
-    // ボタンを早く離すと低いジャンプ
-    if (this.jumpCut && !input.jumpHeld && this.vel.y > 2) { this.vel.y *= 0.5; this.jumpCut = false; }
-    if (this.vel.y <= 0) this.jumpCut = false;
 
     this.contacts.length = 0;
     this.moveAxis('x', this.vel.x * dt);
     this.moveAxis('z', this.vel.z * dt);
-    this.vel.y = Math.max(this.vel.y - GRAVITY * dt, -32);
     const fallSpeed = -this.vel.y;
     this.moveVertical(this.vel.y * dt);
     this.depenetrate();
-    if (this.grounded && !wasGrounded && fallSpeed > 5) this.hooks.onLand?.(fallSpeed);
+    if (this.grounded && !wasGrounded && fallSpeed > 5 && !this.inWater) this.hooks.onLand?.(fallSpeed);
     this.state = this.grounded ? 'ground' : 'air';
 
     this.tryStartClimb(dt);
-    if (this.state !== 'climb' && md.len > 0.1 && this.punchT < 0) this.turnToward(Math.atan2(md.x, md.z), dt, 14);
+    if (this.state !== 'climb') this.turnToward(this.aim.yaw, dt, 25);
+  }
+
+  boxesAt(x, y, z) {
+    return this.world.boxesIn(x - HW, y + 1e-4, z - HW, x + HW, y + HEIGHT - 1e-4, z + HW);
   }
 
   overlaps(b, x = this.pos.x, y = this.pos.y, z = this.pos.z) {
@@ -188,25 +220,20 @@ export class Player {
   }
 
   fitsAt(x, y, z) {
-    for (const b of this.world.boxes) if (this.overlaps(b, x, y, z)) return false;
-    return true;
+    return this.boxesAt(x, y, z).length === 0;
   }
 
   moveAxis(axis, d) {
     if (d === 0) return;
     this.pos[axis] += d;
-    for (const b of this.world.boxes) {
+    for (const b of this.boxesAt(this.pos.x, this.pos.y, this.pos.z)) {
       if (!this.overlaps(b)) continue;
-      const rise = b.max.y - this.pos.y;
-      if (this.grounded && rise > 0 && rise <= STEP && this.fitsAt(this.pos.x, b.max.y, this.pos.z)) {
-        this.pos.y = b.max.y;
-        continue;
-      }
       // 角にわずかに引っかかっただけなら横へずらして回り込む
       const side = axis === 'x' ? 'z' : 'x';
       const pushNeg = this.pos[side] + HW - b.min[side], pushPos = b.max[side] - (this.pos[side] - HW);
       const slide = pushNeg < pushPos ? -(pushNeg + EPS) : pushPos + EPS;
-      if (Math.abs(slide) < CORNER_SLIDE && this.state !== 'climb') {
+      // （斜めに角へ押し込んでいるときは、ずらすと逆戻りになるのでしない）
+      if (Math.abs(slide) < CORNER_SLIDE && this.state !== 'climb' && this.vel[side] * slide >= 0) {
         const at = { x: this.pos.x, y: this.pos.y, z: this.pos.z };
         at[side] += slide;
         if (this.fitsAt(at.x, at.y, at.z)) { this.pos[side] = at[side]; continue; }
@@ -222,8 +249,8 @@ export class Player {
     this.pos.y += dy;
     this.grounded = false;
     let landTop = -Infinity, ceil = Infinity;
-    for (const b of this.world.boxes) {
-      if (!(this.pos.x - HW < b.max.x && this.pos.x + HW > b.min.x && this.pos.z - HW < b.max.z && this.pos.z + HW > b.min.z)) continue;
+    const lo = Math.min(prevY, this.pos.y) - 0.01, hi = Math.max(prevY, this.pos.y) + HEIGHT + 0.01;
+    for (const b of this.world.boxesIn(this.pos.x - HW, lo, this.pos.z - HW, this.pos.x + HW, hi, this.pos.z + HW)) {
       if (dy <= 0) {
         if (prevY + EPS >= b.max.y && this.pos.y <= b.max.y && b.max.y > landTop) landTop = b.max.y;
       } else if (prevY + HEIGHT <= b.min.y + EPS && this.pos.y + HEIGHT > b.min.y && this.pos.y < b.max.y) {
@@ -241,10 +268,10 @@ export class Player {
     }
   }
 
-  // 落ちてきたオブジェクトなどにめり込んだら押し出す
+  // 落ちてきたブロックなどにめり込んだら押し出す
   depenetrate() {
     for (let iter = 0; iter < 2; iter++) {
-      for (const b of this.world.boxes) {
+      for (const b of this.boxesAt(this.pos.x, this.pos.y, this.pos.z)) {
         if (!this.overlaps(b)) continue;
         const up = b.max.y - this.pos.y;
         if (up <= 0.6 && this.fitsAt(this.pos.x, b.max.y, this.pos.z)) {
@@ -271,24 +298,25 @@ export class Player {
   }
 
   // ---------- よじ登り ----------
-  // 壁（オブジェクトの側面）に向かって押し続けると張り付く。空中なら即座に掴む
+  // ブロックの側面に向かって押し続けると張り付く。空中なら即座に掴む。1 段の段差はすぐ乗り上がる
   tryStartClimb(dt) {
     const md = this.moveDir;
     if (this.regrab > 0 || this.punchT >= 0 || md.len < 0.5) { this.pushTimer = 0; return; }
     let hit = null;
     for (const c of this.contacts) {
-      if (c.box.kind !== 'object') continue;
+      if (c.box.kind !== 'block') continue;
       const nx = c.axis === 'x' ? c.sign : 0, nz = c.axis === 'z' ? c.sign : 0;
       const into = -(md.x * nx + md.z * nz) / md.len;
-      if (into > 0.7 && c.box.max.y > this.pos.y + STEP) { hit = { x: nx, z: nz }; break; }
+      if (into > 0.6 && c.box.max.y > this.pos.y + 0.3) { hit = { x: nx, z: nz }; break; }
     }
     if (!hit) { this.pushTimer = 0; return; }
     this.pushTimer += dt;
-    if (this.pushTimer < (this.grounded ? 0.22 : 0)) return;
-    // 掴める壁が正面にあるか確かめてから張り付く
     this.wall = hit;
-    if (this.probeWall()) this.startClimb(hit);
-    else this.pushTimer = 0;
+    const probe = this.probeWall();
+    if (!probe) { this.pushTimer = 0; return; }
+    const low = probe.top <= this.pos.y + 1.05;
+    const wait = !this.grounded || this.inWater ? 0 : low ? 0.05 : 0.22;
+    if (this.pushTimer >= wait) this.startClimb(hit);
   }
 
   startClimb(normal) {
@@ -298,6 +326,7 @@ export class Player {
     this.facing = Math.atan2(-normal.x, -normal.z);
     this.pushTimer = 0;
     this.grounded = false;
+    this.inWater = false;
     this.hooks.onGrab?.();
   }
 
@@ -315,10 +344,7 @@ export class Player {
       z0 = Math.min(face, face - nz * D); z1 = Math.max(face, face - nz * D);
       x0 = this.pos.x - T; x1 = this.pos.x + T;
     }
-    const list = [];
-    for (const b of this.world.objects) {
-      if (b.max.x > x0 && b.min.x < x1 && b.max.z > z0 && b.min.z < z1 && b.max.y > this.pos.y + 0.02) list.push(b);
-    }
+    const list = this.world.boxesIn(x0, this.pos.y + 0.02, z0, x1, this.world.SY + 1, z1).filter((b) => b.kind === 'block');
     if (!list.length) return null;
     list.sort((a, b) => a.min.y - b.min.y);
     if (list[0].min.y > this.pos.y + 1.6) return null;
@@ -342,7 +368,6 @@ export class Player {
       this.jumpBuffer = 0;
       this.state = 'air';
       this.vel.set(nx * 4.5, JUMP_V * 0.9, nz * 4.5);
-      this.facing = Math.atan2(nx, nz);
       this.regrab = 0.35;
       this.jumpCut = false;
       this.hooks.onJump?.();
@@ -381,10 +406,8 @@ export class Player {
 
   mantleTarget(probe) {
     const { x: nx, z: nz } = this.wall;
-    const b = probe.box;
-    const depth = nx !== 0 ? b.max.x - b.min.x : b.max.z - b.min.z;
     // 縁のすぐ奥に別の物があるときは、乗れるところまで手前にずらす
-    for (let d = Math.min(HW + 0.15, depth / 2); d > 0; d -= 0.1) {
+    for (let d = HW + 0.15; d > 0; d -= 0.1) {
       const tx = this.pos.x - nx * (HW + d), tz = this.pos.z - nz * (HW + d);
       if (this.fitsAt(tx, probe.top + 0.01, tz)) return new THREE.Vector3(tx, probe.top, tz);
     }
@@ -394,7 +417,7 @@ export class Player {
   startMantle(target) {
     this.state = 'mantle';
     const rise = clamp((target.y - this.pos.y) / MANTLE_REACH, 0, 1);
-    this.mantle = { from: this.pos.clone(), to: target, t: 0, dur: 0.16 + 0.14 * rise };
+    this.mantle = { from: this.pos.clone(), to: target, t: 0, dur: 0.14 + 0.14 * rise };
     this.hooks.onMantle?.();
   }
 
@@ -415,22 +438,28 @@ export class Player {
       this.state = 'ground';
       this.grounded = true;
       this.vel.set(0, 0, 0);
-      this.regrab = 0.15;
+      this.regrab = 0.1;
     }
   }
 
   // ---------- パンチ ----------
   updatePunch(dt) {
-    const canPunch = this.state === 'ground' || this.state === 'air';
+    // 登っている最中も殴れる（頭上に張り出したブロックを壊して登り続けられる）
+    const canPunch = this.state === 'ground' || this.state === 'air' || this.state === 'climb';
     const ready = this.punchT < 0 || this.punchT >= PUNCH_CHAIN_AT;
     if (this.punchBuffer > 0 && ready && canPunch) {
       this.punchBuffer = 0;
+      if (this.state === 'air' && !this.inWater && this.aim.pitch < POUND_PITCH) {
+        this.startPound();
+        return;
+      }
       this.punchT = 0;
       this.punchHit = false;
+      this.punchPitch = this.aim.pitch;
       this.punchArm ^= 1;
-      this.punchDash = this.running && Math.hypot(this.vel.x, this.vel.z) > 6;
+      if (this.state !== 'climb') this.facing = this.aim.yaw;
+      this.punchDash = this.running && Math.abs(this.aim.pitch) < 0.5 && Math.hypot(this.vel.x, this.vel.z) > 6;
       this.regrab = Math.max(this.regrab, 0.45);
-      if (this.moveDir.len > 0.1) this.facing = Math.atan2(this.moveDir.x, this.moveDir.z);
       if (this.punchDash) {
         const f = this.forward;
         this.vel.x += f.x * 2;
@@ -448,25 +477,66 @@ export class Player {
     }
   }
 
+  // 足元のブロック。足の裏と重なっているもののうち、重なりが一番大きいもの
+  cellUnderFeet() {
+    const y = Math.floor(this.pos.y - 0.5);
+    const x0 = this.pos.x - HW, x1 = this.pos.x + HW, z0 = this.pos.z - HW, z1 = this.pos.z + HW;
+    let best = null, bestArea = 0;
+    for (let x = Math.floor(x0); x <= Math.floor(x1 - 1e-4); x++) {
+      for (let z = Math.floor(z0); z <= Math.floor(z1 - 1e-4); z++) {
+        const t = this.world.get(x, y, z);
+        if (t <= 0 || this.world.isWater(x, y, z)) continue;
+        const area = (Math.min(x1, x + 1) - Math.max(x0, x)) * (Math.min(z1, z + 1) - Math.max(z0, z));
+        if (area > bestArea) { bestArea = area; best = [x, y, z]; }
+      }
+    }
+    return best;
+  }
+
+  // 照準の先のブロックを殴る。ダッシュパンチは 2 ダメージ
   doHit() {
-    const f = this.forward;
-    const cx = this.pos.x + f.x * 0.8, cz = this.pos.z + f.z * 0.8;
-    const R = 0.45;
-    const hits = this.world.objectsIn(cx - R, this.pos.y + 0.1, cz - R, cx + R, this.pos.y + 1.7, cz + R);
-    const point = new THREE.Vector3(cx, this.pos.y + 1.05, cz);
-    if (!hits.length) return;
-    const dist = (o) => Math.hypot((o.min.x + o.max.x) / 2 - this.pos.x, (o.min.z + o.max.z) / 2 - this.pos.z);
-    hits.sort((a, b) => dist(a) - dist(b));
-    // 当たった面の上に火花を出す
-    const first = hits[0];
-    point.set(
-      clamp(point.x, first.min.x, first.max.x),
-      clamp(point.y, first.min.y, first.max.y),
-      clamp(point.z, first.min.z, first.max.z),
-    );
-    const dmg = this.punchDash ? 2 : 1;
-    const results = hits.slice(0, this.punchDash ? 3 : 2).map((o) => ({ obj: o, broken: this.world.damage(o, dmg, f) }));
-    this.hooks.onPunchHit?.(results, point, this.punchDash);
+    const hit = this.aim.target;
+    if (!hit) return;
+    const d = this.aim.dir;
+    const r = this.world.damage(hit.x, hit.y, hit.z, this.punchDash ? 2 : 1, { x: d.x, y: d.y, z: d.z });
+    if (!r) return;
+    const point = new THREE.Vector3(hit.x + 0.5, hit.y + 0.5, hit.z + 0.5)
+      .add(new THREE.Vector3(hit.normal[0], hit.normal[1], hit.normal[2]).multiplyScalar(0.5));
+    this.hooks.onPunchHit?.([r], point, this.punchDash);
+  }
+
+  // ---------- 急降下パンチ（空中で真下を向いてパンチ） ----------
+  startPound() {
+    this.state = 'pound';
+    this.punchT = -1;
+    this.vel.set(0, POUND_V, 0);
+    this.hooks.onSwing?.(true);
+  }
+
+  updatePound(dt) {
+    this.vel.x = 0;
+    this.vel.z = 0;
+    this.vel.y = POUND_V;
+    this.moveVertical(this.vel.y * dt);
+    this.depenetrate();
+    if (this.world.isWaterAt(this.pos.x, this.pos.y + 0.8, this.pos.z)) {
+      this.state = 'air';
+      this.vel.y = -3;
+      return;
+    }
+    if (!this.grounded) return;
+    this.state = 'ground';
+    this.vel.y = 0;
+    this.regrab = 0.2;
+    const c = this.cellUnderFeet();
+    const results = [];
+    let point = this.pos.clone();
+    if (c) {
+      const r = this.world.damage(c[0], c[1], c[2], 2, { x: 0, y: -1, z: 0 });
+      if (r) results.push(r);
+      point = new THREE.Vector3(this.pos.x, c[1] + 1, this.pos.z);
+    }
+    this.hooks.onPound?.(results, point);
   }
 
   // ---------- クリア時 ----------
@@ -476,12 +546,12 @@ export class Player {
     this.t = 0;
   }
 
-  updateWin(dt, camYaw) {
+  updateWin(dt) {
     this.vel.x = 0;
     this.vel.z = 0;
     this.vel.y = Math.max(this.vel.y - GRAVITY * dt, -32);
     this.moveVertical(this.vel.y * dt);
-    this.turnToward(camYaw, dt, 6);
+    this.turnToward(this.aim.yaw + Math.PI, dt, 6);
   }
 
   // ---------- アニメーション ----------
@@ -490,8 +560,9 @@ export class Player {
     const tgt = { aLx: 0, aLz: 0.12, aRx: 0, aRz: -0.12, lLx: 0, lRx: 0, lean: 0, bob: 0, twist: 0, headX: 0 };
     const hs = Math.hypot(this.vel.x, this.vel.z);
     this.t += dt;
+    const state = this.inWater && (this.state === 'air' || this.state === 'ground') ? 'swim' : this.state;
 
-    switch (this.state) {
+    switch (state) {
       case 'ground':
         if (hs > 0.4) {
           const run = hs > 5.8;
@@ -524,6 +595,19 @@ export class Player {
         tgt.aRz = -0.7;
         tgt.lean = 0.12;
         break;
+      case 'swim': {
+        this.phase += dt * (hs > 0.5 ? 7 : 3.5);
+        const s = Math.sin(this.phase);
+        tgt.lean = hs > 0.5 ? 1.05 : 0.2;
+        tgt.aLx = -2.2 + s * 0.9;
+        tgt.aRx = -2.2 - s * 0.9;
+        tgt.aLz = 0.5;
+        tgt.aRz = -0.5;
+        tgt.lLx = s * 0.5;
+        tgt.lRx = -s * 0.5;
+        tgt.headX = hs > 0.5 ? -0.7 : 0;
+        break;
+      }
       case 'climb': {
         const s = Math.sin(this.climbPhase);
         tgt.aLx = -2.7 + s * 0.35;
@@ -543,6 +627,16 @@ export class Player {
         tgt.lRx = -0.5;
         tgt.lean = 0.4;
         break;
+      case 'pound':
+        tgt.aLx = -0.25;
+        tgt.aRx = -0.25;
+        tgt.aLz = 0.25;
+        tgt.aRz = -0.25;
+        tgt.lLx = -1.3;
+        tgt.lRx = -1.3;
+        tgt.lean = 0.45;
+        tgt.bob = 0.15;
+        break;
       case 'win': {
         const s = Math.sin(this.t * 10);
         tgt.aLx = -2.9;
@@ -554,6 +648,8 @@ export class Player {
         break;
       }
     }
+
+    if (state === 'ground' || state === 'air') tgt.headX = clamp(-this.aim.pitch * 0.6, -0.6, 0.6);
 
     const k = snap ? 1 : 1 - Math.exp(-dt * 16);
     for (const key in tgt) p[key] += (tgt[key] - p[key]) * k;
@@ -567,12 +663,20 @@ export class Player {
       else if (t < 0.17) ext = 1;
       else ext = Math.max(0, 1 - (t - 0.17) / 0.13);
       const right = this.punchArm === 1;
-      p[right ? 'aRx' : 'aLx'] = -0.45 - 1.15 * ext;
-      p[right ? 'aRz' : 'aLz'] = 0;
+      const armX = right ? 'aRx' : 'aLx', armZ = right ? 'aRz' : 'aLz';
       const other = right ? 'aLx' : 'aRx';
+      // 腕を照準の角度へ突き出す（-π/2 が水平、-π が真上）。下向きは前かがみになる
+      const pitch = this.punchPitch;
+      const e = Math.max(0, ext);
+      p[armX] = -0.45 + (clamp(-Math.PI / 2 - pitch * 0.95, -3.05, -0.3) + 0.45) * e - 0.3 * Math.min(0, ext);
+      p[armZ] = 0;
+      if (pitch < -0.3) {
+        p.lean = Math.max(p.lean, -pitch * 0.55 * e);
+        p.bob = -0.18 * e * Math.min(1, -pitch);
+      } else {
+        p.twist = (right ? 1 : -1) * 0.45 * ext * (1 - Math.min(1, Math.max(0, pitch)));
+      }
       p[other] += (-0.9 - p[other]) * k;
-      p.twist = (right ? 1 : -1) * 0.45 * ext;
-      p.lean += (0.15 * ext - p.lean) * k;
       fistScale = 1 + 0.35 * Math.max(0, ext);
     }
 

@@ -73,7 +73,7 @@ export class Sfx {
 
   hit(sound) {
     if (!this.ok) return;
-    this.tone({ freq: sound === 'stone' ? 120 : 170, freqEnd: 55, dur: 0.12, type: 'triangle', gain: 0.5 });
+    this.tone({ freq: sound === 'stone' ? 120 : sound === 'dirt' ? 110 : 170, freqEnd: 55, dur: 0.12, type: 'triangle', gain: 0.5 });
     this.noise({ dur: 0.08, type: 'lowpass', freq: sound === 'leaf' ? 3000 : 1400, gain: 0.35 });
   }
 
@@ -83,6 +83,9 @@ export class Sfx {
       this.noise({ dur: 0.5, type: 'lowpass', freq: 1600, freqEnd: 200, gain: 0.7 });
       this.tone({ freq: 90, freqEnd: 40, dur: 0.3, gain: 0.45 });
       for (const d of [0.03, 0.09, 0.16]) this.noise({ dur: 0.05, freq: 1800, q: 2, gain: 0.25, delay: d });
+    } else if (sound === 'dirt' || sound === 'sand') {
+      this.noise({ dur: 0.28, type: 'lowpass', freq: sound === 'sand' ? 2400 : 900, freqEnd: 250, gain: 0.55 });
+      this.tone({ freq: 100, freqEnd: 50, dur: 0.15, gain: 0.3 });
     } else if (sound === 'leaf') {
       this.noise({ dur: 0.3, type: 'highpass', freq: 3000, freqEnd: 1400, gain: 0.3 });
     } else {
@@ -111,6 +114,17 @@ export class Sfx {
     if (!this.ok) return;
     this.tone({ freq: 90, freqEnd: 45, dur: 0.18, gain: 0.4 * strength });
     this.noise({ dur: 0.15, type: 'lowpass', freq: 600, gain: 0.3 * strength });
+  }
+
+  splash(strength) {
+    if (!this.ok) return;
+    this.noise({ dur: 0.35, freq: 1200, freqEnd: 400, q: 0.7, gain: 0.25 + 0.25 * strength });
+  }
+
+  pound() {
+    if (!this.ok) return;
+    this.tone({ freq: 80, freqEnd: 35, dur: 0.25, gain: 0.55 });
+    this.noise({ dur: 0.2, type: 'lowpass', freq: 700, gain: 0.4 });
   }
 
   checkpoint() {

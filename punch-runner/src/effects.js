@@ -31,35 +31,40 @@ export class Effects {
     return this.matCache.get(color);
   }
 
-  burst(obj, dir) {
-    const [w, h, d] = obj.size;
-    const vol = w * h * d;
-    const n = Math.round(Math.min(36, 8 + vol * 6));
-    const cx = (obj.min.x + obj.max.x) / 2, cy = (obj.min.y + obj.max.y) / 2, cz = (obj.min.z + obj.max.z) / 2;
-    const colors = obj.type.debris;
-    const sizeK = Math.min(1.3, 0.7 + Math.cbrt(vol) * 0.3);
+  // 壊れたブロック (x, y, z) を破片にする。dir は殴った向き
+  burstBlock(x, y, z, def, dir) {
+    const n = 12;
+    const colors = def.debris;
     for (let i = 0; i < n; i++) {
       if (this.debris.length >= DEBRIS_MAX) this.group.remove(this.debris.shift().mesh);
-      const s = (0.12 + Math.random() * 0.22) * sizeK;
+      const s = 0.14 + Math.random() * 0.2;
       const mesh = new THREE.Mesh(this.cube, this.debrisMaterial(colors[i % colors.length]));
       mesh.scale.setScalar(s);
-      mesh.position.set(obj.min.x + Math.random() * w, obj.min.y + Math.random() * h, obj.min.z + Math.random() * d);
+      mesh.position.set(x + 0.15 + Math.random() * 0.7, y + 0.15 + Math.random() * 0.7, z + 0.15 + Math.random() * 0.7);
       mesh.rotation.set(Math.random() * 6, Math.random() * 6, Math.random() * 6);
-      mesh.castShadow = i < 6;
+      mesh.castShadow = i < 3;
       this.group.add(mesh);
-      let ox = mesh.position.x - cx, oz = mesh.position.z - cz;
+      let ox = mesh.position.x - (x + 0.5), oz = mesh.position.z - (z + 0.5);
       const ol = Math.hypot(ox, oz) || 1;
       ox /= ol; oz /= ol;
-      const push = 2 + Math.random() * 4;
-      const out = 1 + Math.random() * 3;
+      const push = 2 + Math.random() * 3.5;
+      const out = 1 + Math.random() * 2.5;
       this.debris.push({
         mesh, size: s,
-        vel: new THREE.Vector3(ox * out + dir.x * push, 2 + Math.random() * 5, oz * out + dir.z * push),
+        vel: new THREE.Vector3(
+          ox * out + dir.x * push,
+          2 + Math.random() * 4.5 + (dir.y ?? 0) * push,
+          oz * out + dir.z * push,
+        ),
         spin: new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(18),
-        life: 1.6 + Math.random() * 1.2,
+        life: 1.3 + Math.random() * 1.1,
       });
     }
-    this.puff(new THREE.Vector3(cx, cy, cz), 0xf2efe8, Math.min(10, 4 + Math.round(vol * 2)), 2.5, 0.55 * sizeK);
+    this.puff(new THREE.Vector3(x + 0.5, y + 0.5, z + 0.5), 0xf2efe8, 5, 2.2, 0.5);
+  }
+
+  splash(pos, strength = 1) {
+    this.puff(pos, 0xcfe8ff, Math.round(5 + strength * 6), 2 + strength * 2, 0.3 + strength * 0.15);
   }
 
   puff(pos, color, count, speed, size) {

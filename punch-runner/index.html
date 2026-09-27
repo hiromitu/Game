@@ -52,10 +52,20 @@
     .toast.show { opacity: 1; transform: translate(-50%, 0) scale(1); }
 
     .flash { position: fixed; inset: 0; background: #fff; opacity: 0; pointer-events: none; }
+    .crosshair { position: fixed; left: 50%; top: 50%; width: 22px; height: 22px; margin: -11px 0 0 -11px; pointer-events: none; }
+    .crosshair::before, .crosshair::after { content: ""; position: absolute; background: rgba(255, 255, 255, 0.9);
+      box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45); }
+    .crosshair::before { left: 10px; top: 2px; width: 2px; height: 18px; }
+    .crosshair::after { top: 10px; left: 2px; height: 2px; width: 18px; }
+    .crosshair[hidden], .lock-hint[hidden] { display: none; }
+    .lock-hint { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); padding: 12px 20px;
+      background: var(--panel-bg); border: 1px solid var(--panel-border); border-radius: 12px; font-weight: 700; pointer-events: none; }
+    .setting { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; margin: 4px 0 14px; font-size: 13px; color: var(--muted); }
+    .setting input { accent-color: var(--accent); }
     .flash.on { animation: flash 0.5s ease-out; }
     @keyframes flash { from { opacity: 0.7; } to { opacity: 0; } }
 
-    .help { position: fixed; left: 14px; bottom: 14px; width: 272px; padding: 10px 14px 12px; background: var(--panel-bg);
+    .help { position: fixed; left: 14px; bottom: 14px; width: 292px; padding: 10px 14px 12px; background: var(--panel-bg);
       border: 1px solid var(--panel-border); border-radius: 12px; font-size: 12px; backdrop-filter: blur(6px); }
     .help h2 { margin: 0 0 6px; font-size: 12px; letter-spacing: 0.1em; color: var(--accent); display: flex; justify-content: space-between; }
     .help dl { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; margin: 0; }
@@ -108,6 +118,8 @@
 <body>
   <canvas id="scene" tabindex="-1"></canvas>
   <div class="flash" id="flash"></div>
+  <div class="crosshair" id="crosshair" hidden></div>
+  <div class="lock-hint" id="lock-hint" hidden>画面をクリックすると操作できます</div>
   <div class="loading">読み込み中…</div>
 
   <div class="hud" id="hud" hidden>
@@ -115,7 +127,7 @@
     <div class="stats">
       <span>タイム<b id="hud-time">0:00.0</b></span>
       <span>破壊<b id="hud-breaks">0</b></span>
-      <span>落下<b id="hud-falls">0</b></span>
+      <span>高さ<b id="hud-height">0m</b></span>
     </div>
   </div>
   <div class="hint" id="hint" role="status"></div>
@@ -130,27 +142,30 @@
   <aside class="help" id="help">
     <h2><span>操作</span><span><kbd>H</kbd></span></h2>
     <dl>
-      <dt><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></dt><dd>移動（矢印キーでも可）</dd>
-      <dt><kbd>Shift</kbd></dt><dd>押しながらで走る</dd>
-      <dt><kbd>Space</kbd></dt><dd>ジャンプ（長押しで高く）</dd>
-      <dt><kbd>J</kbd> / クリック</dt><dd>パンチ。走りながらでダッシュパンチ（2 倍）</dd>
-      <dt>壁へ押し続ける</dt><dd>よじ登る。<kbd>Space</kbd> で壁ジャンプ、後ろで手を離す</dd>
-      <dt><kbd>Q</kbd> <kbd>E</kbd></dt><dd>カメラ回転 / ホイールでズーム</dd>
-      <dt><kbd>R</kbd> <kbd>Esc</kbd> <kbd>M</kbd></dt><dd>やり直し / ポーズ / 音</dd>
+      <dt>マウス</dt><dd>向き（上下左右）。画面中央の照準が狙い</dd>
+      <dt>左クリック</dt><dd>照準のブロックをパンチ。上を向けば上、下を向けば足元</dd>
+      <dt>右クリック</dt><dd>ジャンプ（長押しで高く、水中では浮上）</dd>
+      <dt><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></dt><dd>移動（向いている方向が前）</dd>
+      <dt><kbd>Shift</kbd></dt><dd>走る。走りながら正面をパンチでダッシュパンチ（2 倍）</dd>
+      <dt>空中で真下へパンチ</dt><dd>急降下パンチ（2 倍）</dd>
+      <dt>壁へ進み続ける</dt><dd>よじ登る。右クリックで壁ジャンプ、<kbd>S</kbd> で手を離す</dd>
+      <dt>ホイール</dt><dd>カメラの距離</dd>
+      <dt><kbd>Esc</kbd> <kbd>R</kbd> <kbd>M</kbd></dt><dd>ポーズ（マウス解放）/ やり直し / 音</dd>
     </dl>
   </aside>
 
   <div class="overlay" id="overlay">
     <section class="card" id="screen-title" hidden>
       <h1>PUNCH<br>RUNNER</h1>
-      <p class="lead">殴って、よじ登って、跳んで、ゴールのゲートを目指せ！<br>地面以外は、ぜんぶ壊せる。</p>
+      <p class="lead">山も丘も、殴って・よじ登って・掘り進んで、光るゲートを目指せ！<br>水以外は、ぜんぶ壊せる。</p>
       <div class="stage-select" id="stage-select"></div>
       <div class="actions"><button id="btn-start" class="primary" type="button">スタート</button></div>
-      <p class="small"><kbd>Enter</kbd> でもスタート</p>
+      <p class="small">マウスで向き・左クリックでパンチ・右クリックでジャンプ。<kbd>Enter</kbd> でもスタート</p>
     </section>
 
     <section class="card" id="screen-pause" hidden>
       <h2>ポーズ</h2>
+      <label class="setting"><span>マウス感度</span><input id="sens" type="range" min="0.3" max="3" step="0.1" value="1"><span id="sens-value">1.0x</span></label>
       <div class="actions">
         <button id="btn-resume" class="primary" type="button">つづける</button>
         <button id="btn-restart" type="button">ステージをやり直す</button>
@@ -164,7 +179,6 @@
         <dt>タイム</dt><dd id="clear-time"></dd>
         <dt>ベスト</dt><dd id="clear-best"></dd>
         <dt>壊した数</dt><dd id="clear-breaks"></dd>
-        <dt>落ちた回数</dt><dd id="clear-falls"></dd>
       </dl>
       <div class="actions">
         <button id="btn-next" class="primary" type="button">次のステージへ</button>
@@ -179,7 +193,6 @@
       <dl class="result">
         <dt>合計タイム</dt><dd id="complete-time"></dd>
         <dt>壊した数</dt><dd id="complete-breaks"></dd>
-        <dt>落ちた回数</dt><dd id="complete-falls"></dd>
       </dl>
       <div class="actions"><button id="btn-again" class="primary" type="button">タイトルへ</button></div>
     </section>

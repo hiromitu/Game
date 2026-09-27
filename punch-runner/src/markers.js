@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { GRAVITY } from './world.js';
 
-// ゴールのゲートとチェックポイント。どちらも当たり判定のない目印で、
-// 下のオブジェクトが壊れたら一緒に落ちてくる（ゴールに届かなくなることはない）
+// ゴールのゲート。当たり判定のない目印で、下のブロックを壊すと落ちてくる
+// （ゴールに届かなくなることはない）
 
 function gradientTexture() {
   const c = document.createElement('canvas');
@@ -46,16 +46,16 @@ function swirlTexture() {
 
 // 下に支えがなければ落ちる目印の共通処理
 class Marker {
-  place(world, x, z) {
+  // y を省略すると、その列の一番上に置く
+  place(world, x, z, y) {
     this.x = x;
     this.z = z;
-    const top = world.supportTop(x - 0.3, z - 0.3, x + 0.3, z + 0.3, Infinity);
-    this.y = top === -Infinity ? 0 : top;
+    this.y = y ?? world.surfaceTop(Math.floor(x), Math.floor(z));
     this.vy = 0;
   }
 
   settle(world, dt) {
-    const sup = world.supportTop(this.x - 0.3, this.z - 0.3, this.x + 0.3, this.z + 0.3, this.y);
+    const sup = world.topBelow(this.x, this.z, this.y + 1e-3);
     if (sup === -Infinity) return;
     if (this.y > sup + 1e-3) {
       this.vy -= GRAVITY * dt;
@@ -104,53 +104,5 @@ export class Goal extends Marker {
 
   contains(p) {
     return Math.hypot(p.x - this.x, p.z - this.z) < 1.0 && p.y > this.y - 0.6 && p.y < this.y + 2.2;
-  }
-}
-
-const CP_IDLE = new THREE.Color(0x9fb3c8);
-const CP_ACTIVE = new THREE.Color(0x4dffb8);
-
-export class Checkpoint extends Marker {
-  constructor(scene, world, x, z) {
-    super();
-    this.scene = scene;
-    this.active = false;
-    this.group = new THREE.Group();
-    this.ringMat = new THREE.MeshBasicMaterial({ color: CP_IDLE, transparent: true, opacity: 0.85, side: THREE.DoubleSide, depthWrite: false });
-    const ring = new THREE.Mesh(new THREE.RingGeometry(0.8, 1.05, 40), this.ringMat);
-    ring.rotation.x = -Math.PI / 2;
-    ring.position.y = 0.03;
-    this.gemMat = new THREE.MeshStandardMaterial({ color: CP_IDLE, emissive: CP_IDLE, emissiveIntensity: 0.3, flatShading: true });
-    this.gem = new THREE.Mesh(new THREE.OctahedronGeometry(0.22), this.gemMat);
-    this.gem.position.y = 2.4;
-    this.group.add(ring, this.gem);
-    scene.add(this.group);
-    this.place(world, x, z);
-  }
-
-  activate() {
-    this.active = true;
-    this.ringMat.color.copy(CP_ACTIVE);
-    this.gemMat.color.copy(CP_ACTIVE);
-    this.gemMat.emissive.copy(CP_ACTIVE);
-    this.gemMat.emissiveIntensity = 0.9;
-  }
-
-  update(dt, world, time) {
-    this.settle(world, dt);
-    this.group.position.set(this.x, this.y, this.z);
-    this.gem.rotation.y = time * (this.active ? 3 : 1);
-    this.gem.position.y = 2.4 + Math.sin(time * 2 + this.x) * 0.1;
-  }
-
-  contains(p) {
-    return Math.hypot(p.x - this.x, p.z - this.z) < 1.2 && Math.abs(p.y - this.y) < 2;
-  }
-
-  dispose() {
-    this.scene.remove(this.group);
-    this.group.traverse((o) => {
-      if (o.isMesh) { o.geometry.dispose(); o.material.dispose(); }
-    });
   }
 }
